@@ -1,0 +1,26 @@
+--- a/sdk/CMakeLists.txt
++++ b/sdk/CMakeLists.txt
+@@ -33,9 +33,9 @@ if(COMMAND cmake_policy)
+ 	cmake_policy(SET CMP0003 NEW)
+ 	cmake_policy(SET CMP0005 NEW)
+ 	if(POLICY CMP0053)
+-		cmake_policy(SET CMP0053 OLD)
++		cmake_policy(SET CMP0053 NEW)
+ 	endif()
+ 	if(POLICY CMP0037)
+-		cmake_policy(SET CMP0037 OLD)
++		cmake_policy(SET CMP0037 NEW)
+ 	endif()
+ 	if(POLICY CMP0043)
+-		cmake_policy(SET CMP0043 OLD)
++		cmake_policy(SET CMP0043 NEW)
+ 	endif()
+ endif()
+
+Fix: CMake 3.28+ (bundled with Ubuntu 25.04) no longer allows setting CMP0053,
+CMP0037, or CMP0043 to OLD behaviour — doing so is a hard error.  Setting them to
+NEW is safe; these policies cover variable-reference escaping, target-name
+restrictions, and per-config compile definitions respectively.
+
+Affects: oradar_lidar sdk/CMakeLists.txt (Hiwonder-vendored copy)
+Tested on: CMake 3.31 / Ubuntu 25.04 / aarch64

@@ -1,0 +1,16 @@
+--- a/ldlidar_driver/src/logger/log_module.cpp
++++ b/ldlidar_driver/src/logger/log_module.cpp
+@@ -19,6 +19,7 @@
+ #include <time.h>
+ #include <string.h>
++#include <pthread.h>
+
+ #ifndef LINUX
+ #include <comutil.h>
+
+Fix: pthread_mutex_init / pthread_mutex_lock / pthread_mutex_unlock are used in the
+LINUX branch of log_module.cpp but <pthread.h> was never included (it was commented
+out in the header).  GCC 14 no longer provides implicit declarations.
+
+Affects: ldlidar_stl_ros2 (Hiwonder-vendored copy)
+Tested on: Ubuntu 25.04 / GCC 14 / aarch64

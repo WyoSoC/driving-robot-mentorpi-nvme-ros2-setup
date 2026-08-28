@@ -1,0 +1,34 @@
+--- /tmp/claude-1000/-home-gojian/441a66de-a641-4470-bd34-1295781d852e/scratchpad/originals/async_web_server_cpp/include/async_web_server_cpp/http_connection.hpp	2026-08-28 06:39:24.298278312 -0600
++++ /home/gojian/ros2_ws/src/third_party/async_web_server_cpp/include/async_web_server_cpp/http_connection.hpp	2026-08-26 19:19:50.553859071 -0600
+@@ -5,12 +5,12 @@
+ #include "async_web_server_cpp/http_request_handler.hpp"
+ #include "async_web_server_cpp/http_request_parser.hpp"
+ 
++#include <boost/array.hpp>
+ #include <boost/asio.hpp>
+ #include <boost/enable_shared_from_this.hpp>
+ #include <boost/noncopyable.hpp>
+ #include <boost/shared_ptr.hpp>
+ #include <boost/thread/mutex.hpp>
+-#include <boost/array.hpp>
+ 
+ namespace async_web_server_cpp
+ {
+@@ -40,7 +40,7 @@
+         ReadHandler;
+     typedef std::shared_ptr<const void> ResourcePtr;
+ 
+-    explicit HttpConnection(boost::asio::io_context& io_service,
++    explicit HttpConnection(boost::asio::io_service& io_service,
+                             HttpServerRequestHandler request_handler);
+ 
+     boost::asio::ip::tcp::socket& socket();
+@@ -79,7 +79,7 @@
+     void handle_write(const boost::system::error_code& e,
+                       std::vector<ResourcePtr> resources);
+ 
+-    boost::asio::io_context::strand strand_;
++    boost::asio::io_service::strand strand_;
+     boost::asio::ip::tcp::socket socket_;
+     HttpServerRequestHandler request_handler_;
+     boost::array<char, 8192> buffer_;

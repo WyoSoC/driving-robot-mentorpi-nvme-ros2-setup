@@ -1,0 +1,18 @@
+--- a/ldlidar_driver/include/serialcom/serial_interface_linux.h
++++ b/ldlidar_driver/include/serialcom/serial_interface_linux.h
+@@ -27,6 +27,7 @@
+ #include <sys/file.h>
+ #include <sys/ioctl.h>
++#include <linux/types.h>
+ namespace asmtermios {
+ #include <linux/termios.h>
+ }
+
+Fix: Ubuntu 25.04 (kernel 6.14) updated <linux/termios.h> to transitively include
+<linux/sched/types.h>, which uses __u32/__u64/__s32 kernel types.  Those types are
+defined in <linux/types.h>.  Because the include is wrapped in a C++ namespace the
+normal include-guard chain is broken, so <linux/types.h> must appear before the
+namespace block.
+
+Affects: ldlidar_stl_ros2 (Hiwonder-vendored copy)
+Tested on: Ubuntu 25.04 / GCC 14 / Linux 6.14 / aarch64
