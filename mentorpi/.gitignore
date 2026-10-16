@@ -10,3 +10,4 @@ lab.ico
 expand_rootfs.service
 __pycache__/
 *.pyc
+fleet.env

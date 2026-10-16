@@ -175,7 +175,16 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
 
 def serve_http():
     handler = functools.partial(QuietHandler, directory=WEB_ROOT)
-    server = http.server.ThreadingHTTPServer(('0.0.0.0', HTTP_PORT), handler)
+    for attempt in range(20):  # a previous instance may still be releasing the port
+        try:
+            server = http.server.ThreadingHTTPServer(('0.0.0.0', HTTP_PORT), handler)
+            break
+        except OSError as exc:
+            if attempt == 19:
+                # Without HTTP the page is down while the service looks healthy: exit, let systemd restart.
+                print(f'cannot open port {HTTP_PORT}: {exc}', flush=True)
+                os._exit(1)
+            time.sleep(1)
     server.serve_forever()
 
 

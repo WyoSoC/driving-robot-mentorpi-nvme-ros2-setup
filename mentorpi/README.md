@@ -100,6 +100,9 @@ Manual start without systemd (in this order):
 ├── start_node.sh            runs the ROS 2 bringup in the container (foreground)
 ├── status.sh                health check
 ├── calibrate_imu.sh         guided IMU calibration (tools/imu_calib_guided.py)
+├── calibrate_odom.sh        odometry calibration with lidar + IMU (tools/odom_calib.py)
+├── fleet.sh                 update / check all cars (car list in fleet.env, not in git)
+├── maps/                    PER-CAR: SLAM maps saved from the web UI (not transferred)
 ├── tools/steer_test.sh      steering check (front wheels off the ground)
 ├── install.sh               installs/updates everything on a car (idempotent)
 ├── make_bundle.sh           packages kit + Docker image for transfer
@@ -120,6 +123,20 @@ docker.service
 ```
 
 ---
+
+## Keeping all cars in sync
+
+All cars run the same commit of this repo; per-car files (`car.env`, `calibration/`, `maps/`) stay
+on each car. Make changes in one clone, commit + push, then from any car:
+
+```bash
+~/mentorpi/fleet.sh update   # git pull + install.sh + restart on every car, then status
+~/mentorpi/fleet.sh status   # version, uncommitted changes, services and sensor rates per car
+```
+
+The car list is in `~/mentorpi/fleet.env` (not in git), e.g.
+`FLEET="gojian@jpi1.<tailnet>.ts.net gojian@jpi2.<tailnet>.ts.net"`. Needs ssh keys between the
+cars and passwordless sudo.
 
 ## Multiple cars on one network
 
@@ -201,10 +218,33 @@ whole controller node (no IMU, battery or motors until bringup restarted).
 
 ### Odometry: `calibrate_params.yaml`
 
-`linear_correction_factor` / `angular_correction_factor` (factory 1.0 / 1.0). Tune with Hiwonder's
-`ros2 launch calibration linear_calib.launch.py` and `angular_calib.launch.py` (they drive the
-car: do this on the floor with space around it), then put the values in this file and restart
+How odometry works here: there is **no wheel-encoder feedback**. `odom_publisher` integrates the
+*commanded* speed and steering into `/odom_raw`; the EKF (`ekf_filter_node`) fuses its velocities
+with the IMU heading into `/odom` (the web UI trail). So distances follow the command (wrong if the
+wheels slip or the car is slower than asked), turns follow the gyro.
+
+`linear_correction_factor` / `angular_correction_factor` (factory 1.0 / 1.0) scale those
+velocities. In the factory code they had no effect on `/odom` (applied to a position the EKF
+ignores); `system/patch_odom.py` fixes that at container start. Measure them with the lidar and IMU
+as references; **the car drives at 0.2 m/s, on the floor only (never on a table: the lidar can't
+see the edge)**:
+
+```bash
+~/mentorpi/calibrate_odom.sh check     # no driving: is the car placed right?
+~/mentorpi/calibrate_odom.sh linear    # facing a flat wall 1-4 m ahead, 1.3 m free behind
+~/mentorpi/calibrate_odom.sh angular   # ~1.2 m clear all around: one left + one right circle
+```
+
+Each asks for `go` before driving and before saving, keeps a `.bak-<date>` copy and restarts
 bringup.
+
+### Map (SLAM)
+
+The web UI's **Map** panel runs lidar SLAM (`slam_toolbox`, Hiwonder's `slam/config/slam.yaml`)
+next to the running system: **Start mapping**, drive slowly (≤ 0.3 m/s) and pass your start point
+again now and then so loops close, then **Save map**. Maps are saved per car in
+`~/mentorpi/maps/` (`NAME.pgm/.yaml` for navigation, `NAME.posegraph/.data` to continue mapping)
+and are not transferred to other cars. The page shows the map rendered on the car (`/api/slam`).
 
 ---
 
@@ -281,7 +321,7 @@ Then open `http://<new-car-ip>:8000`.
 | Car stops by itself while driving from web | Watchdog: browser commands stopped >0.5 s (weak Wi-Fi). Server log: `journalctl -u mentorpi-webui` |
 | Nodes all listed but `status.sh` shows NO DATA, web UI shows no video/sensors (often after an SSH logout) | `/dev/shm` was cleared by logind (`ls /dev/shm \| wc -l` is ~0). Re-run `install.sh` (sets `RemoveIPC=no`), then `sudo systemctl restart mentorpi-container && sudo systemctl start mentorpi-webui` |
 | Steering doesn't move at all (drive motors work) | Servo on another port: see [Steering servo port](#steering-servo-port-steer_servo_port-in-carenv) |
-| Web UI "Disconnected", port 9090 not listening; kernel log shows `Out of memory: Killed process ... (python3)` | rosbridge leaked memory after a browser dropped mid-connect (fixed by `system/patch_rosbridge.py`). `mentorpi-watchdog.timer` restarts the robot software automatically if it happens again: `journalctl -u mentorpi-watchdog` |
+| Web UI "Disconnected", port 9090 not listening; kernel log shows `Out of memory: Killed process ... (python3)` | rosbridge leaked memory after a browser dropped mid-connect or stopped reading (fixed by `system/patch_rosbridge.py`: cleanup + max 20 queued messages per client). `mentorpi-watchdog.timer` restarts the robot software automatically if it happens again: `journalctl -u mentorpi-watchdog` |
 | Two cars react to the same command | Same `ROS_DOMAIN_ID`; give each car its own |
 | `install.sh` stops after adding docker group | Expected the first time; log out/in, run again |
 
