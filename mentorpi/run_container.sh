@@ -13,6 +13,9 @@ DIR=$(cd "$(dirname "$0")" && pwd)
 CONTAINER_NAME="MentorPi"
 IMAGE="mentorpi:factory"
 TYPERC=/home/ubuntu/ros2_ws/.typerc
+# The nodes read config from the install tree (plain copies, not symlinks to src/), so the
+# per-car calibration is mounted there; the src/ mounts are for Hiwonder tools that use src/.
+WS_SHARE=/home/ubuntu/ros2_ws/install
 
 if [ ! -f "$DIR/car.env" ]; then
     echo "Missing $DIR/car.env (copy car.env.example and set a unique ROS_DOMAIN_ID)" >&2
@@ -48,6 +51,8 @@ docker run -d \
     -v "$DIR/web_ui:/home/ubuntu/web_ui" \
     -v "$DIR/calibration/imu_calib.yaml:/home/ubuntu/ros2_ws/src/calibration/config/imu_calib.yaml" \
     -v "$DIR/calibration/calibrate_params.yaml:/home/ubuntu/ros2_ws/src/driver/controller/config/calibrate_params.yaml" \
+    -v "$DIR/calibration/imu_calib.yaml:$WS_SHARE/calibration/share/calibration/config/imu_calib.yaml" \
+    -v "$DIR/calibration/calibrate_params.yaml:$WS_SHARE/controller/share/controller/config/calibrate_params.yaml" \
     "${IMAGE}" \
     tail -f /dev/null >/dev/null
 

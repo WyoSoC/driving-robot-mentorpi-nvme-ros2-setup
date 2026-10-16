@@ -94,6 +94,7 @@ Manual start without systemd (in this order):
 ├── run_container.sh         starts the container, applies car.env, mounts calibration + web_ui
 ├── start_node.sh            runs the ROS 2 bringup in the container (foreground)
 ├── status.sh                health check
+├── calibrate_imu.sh         guided IMU calibration (tools/imu_calib_guided.py)
 ├── install.sh               installs/updates everything on a car (idempotent)
 ├── make_bundle.sh           packages kit + Docker image for transfer
 ├── system/                  udev rules + systemd unit templates
@@ -133,22 +134,49 @@ If you use ROS 2 tools from a laptop, set the same `ROS_DOMAIN_ID` there.
 
 ## Calibration (per car)
 
-`calibration/` is bind-mounted into the container over the image's files, so values
-written by the calibration tools persist on the host and stay with this car.
+`calibration/` holds this car's values. `run_container.sh` mounts the files over the copies the
+nodes actually read (`~/ros2_ws/install/.../share/...`), and also over the `src/` copies used
+by Hiwonder's tools. Before 2026-10-16 only the `src/` copies were mounted, so per-car values
+had no effect.
 
-- `imu_calib.yaml`: accelerometer scale/misalignment (`SM`) and `bias`.
-  The defaults came from the factory image of car 1. On a new car, either copy the
-  `imu_calib.yaml` from that car's own Hiwonder SD card
-  (`/home/ubuntu/ros2_ws/src/calibration/config/imu_calib.yaml`), or recalibrate:
-  ```bash
-  docker exec -it -u ubuntu MentorPi /bin/zsh
-  ros2 run imu_calib do_calib --ros-args -r imu:=/ros_robot_controller/imu_raw \
-      -p calib_file:=/home/ubuntu/ros2_ws/src/calibration/config/imu_calib.yaml
-  # follow the prompts (place the car on each side), then restart mentorpi-bringup
-  ```
-- `calibrate_params.yaml`: `linear_correction_factor` / `angular_correction_factor` for
-  odometry (factory 1.0 / 1.0). Tune with `ros2 launch calibration linear_calib.launch.py`
-  and `angular_calib.launch.py` (Hiwonder tools), then copy the values into this file.
+### IMU (accelerometer): `imu_calib.yaml`
+
+Scale/misalignment matrix `SM` and `bias`, applied by `apply_calib` to
+`/ros_robot_controller/imu_raw` → `/imu_corrected`. A new car starts with car 1's factory values.
+Either copy `imu_calib.yaml` from that car's own Hiwonder SD card
+(`/home/ubuntu/ros2_ws/src/calibration/config/imu_calib.yaml`), or calibrate:
+
+```bash
+~/mentorpi/calibrate_imu.sh      # on the car, in a terminal (ssh is fine), system running
+```
+
+You place the car in 6 poses, about 11 s each. The script shows which way is "up" right now and
+starts recording only when the car is in the requested pose and still:
+
+| Step | Axis up | Car pose (hint; follow the live reading) |
+|---|---|---|
+| 1 | X+ | standing on its rear end, front pointing up |
+| 2 | X- | standing on its front end |
+| 3 | Y+ | lying on its right side (left side up) |
+| 4 | Y- | lying on its left side |
+| 5 | Z+ | normal, on its wheels |
+| 6 | Z- | upside down; support the body so the lidar/camera carry no weight |
+
+Use a flat, level table, and a box or books to hold each pose square. If the car moves while
+recording, or the results look wrong (scale outside 0.9–1.1, bias above 1.5 m/s²), nothing is
+changed. On success the old file is kept as `calibration/imu_calib.yaml.bak-<date>` and bringup is
+restarted. To undo: copy the `.bak` file back and `sudo systemctl restart mentorpi-bringup`.
+
+(The script wraps `imu_calib do_calib`; the manual equivalent is
+`ros2 run imu_calib do_calib --ros-args -r imu:=/ros_robot_controller/imu_raw -p output_file:=<file>`.
+Note the parameter is `output_file`, not `calib_file`.)
+
+### Odometry: `calibrate_params.yaml`
+
+`linear_correction_factor` / `angular_correction_factor` (factory 1.0 / 1.0). Tune with Hiwonder's
+`ros2 launch calibration linear_calib.launch.py` and `angular_calib.launch.py` (they drive the
+car: do this on the floor with space around it), then put the values in this file and restart
+bringup.
 
 ---
 
