@@ -87,7 +87,7 @@ Manual start without systemd (in this order):
 ```
 ~/mentorpi/
 ├── README.md                this guide
-├── car.env                  PER-CAR: name, ROS_DOMAIN_ID, web port (not transferred)
+├── car.env                  PER-CAR: name, ROS_DOMAIN_ID, steering port, web port (not transferred)
 ├── car.env.example          template for new cars
 ├── calibration/             PER-CAR: imu_calib.yaml, calibrate_params.yaml (not transferred)
 ├── calibration.defaults/    factory values from the image, used for a new car
@@ -95,6 +95,7 @@ Manual start without systemd (in this order):
 ├── start_node.sh            runs the ROS 2 bringup in the container (foreground)
 ├── status.sh                health check
 ├── calibrate_imu.sh         guided IMU calibration (tools/imu_calib_guided.py)
+├── tools/steer_test.sh      steering check (front wheels off the ground)
 ├── install.sh               installs/updates everything on a car (idempotent)
 ├── make_bundle.sh           packages kit + Docker image for transfer
 ├── system/                  udev rules + systemd unit templates
@@ -124,8 +125,8 @@ its `ROS_DOMAIN_ID` is the number in the hostname (`install.sh` does this by def
 
 | Car (hostname) | ROS_DOMAIN_ID | Notes |
 |---|---|---|
-| jpi1 | 1 | first car; source of the transfer bundle |
-| jpi2 | 2 | installed 2026-10-16; has an extra CH340 voice module (ignored by the udev rules) |
+| jpi1 | 1 | first car; source of the transfer bundle; steering port 3 (factory, not yet verified) |
+| jpi2 | 2 | installed 2026-10-16; extra CH340 voice module (ignored); steering servo on port 4 |
 
 To change it later: edit `car.env`, then `sudo systemctl restart mentorpi-container && sudo systemctl start mentorpi-webui`.
 If you use ROS 2 tools from a laptop, set the same `ROS_DOMAIN_ID` there.
@@ -175,6 +176,23 @@ is **not** used: its 12-parameter fit assumes perfectly square poses and turned 
 of tilt into false cross-axis terms. On car 2 it gave a 2.7% error at rest, against 0.04% for the
 per-axis model computed from the same poses. (If you run `do_calib` by hand, its parameter is
 `output_file`, not `calib_file`.)
+
+### Steering servo port: `STEER_SERVO_PORT` in `car.env`
+
+The software drives the steering servo as PWM servo 3, but which RRC Lite port it is plugged
+into differs between cars. Hiwonder's docs put it on J5 (port 3); **our standard is port 4**
+(car 2 came wired that way). `run_container.sh` patches `ros_robot_controller` at every start
+(`system/patch_controller.py`) to send servo 3 to `STEER_SERVO_PORT` (swapping 3 and 4).
+Unset means 3 (factory). Check with the front wheels off the ground:
+
+```bash
+~/mentorpi/tools/steer_test.sh         # full left 2 s, full right 2 s, centre
+```
+
+If the wheels don't move, try the other port in `car.env`, then
+`sudo systemctl restart mentorpi-container && sudo systemctl start mentorpi-webui`.
+The same patch fixes a factory bug: calling the `pwm_servo/get_state` service crashed the
+whole controller node (no IMU, battery or motors until bringup restarted).
 
 ### Odometry: `calibrate_params.yaml`
 
@@ -257,6 +275,7 @@ Then open `http://<new-car-ip>:8000`.
 | Video "unavailable" | web_video_server (8080) not up, or camera not streaming |
 | Car stops by itself while driving from web | Watchdog: browser commands stopped >0.5 s (weak Wi-Fi). Server log: `journalctl -u mentorpi-webui` |
 | Nodes all listed but `status.sh` shows NO DATA, web UI shows no video/sensors (often after an SSH logout) | `/dev/shm` was cleared by logind (`ls /dev/shm \| wc -l` is ~0). Re-run `install.sh` (sets `RemoveIPC=no`), then `sudo systemctl restart mentorpi-container && sudo systemctl start mentorpi-webui` |
+| Steering doesn't move at all (drive motors work) | Servo on another port: see [Steering servo port](#steering-servo-port-steer_servo_port-in-carenv) |
 | Two cars react to the same command | Same `ROS_DOMAIN_ID`; give each car its own |
 | `install.sh` stops after adding docker group | Expected the first time; log out/in, run again |
 
