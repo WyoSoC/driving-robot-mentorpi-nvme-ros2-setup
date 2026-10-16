@@ -7,6 +7,8 @@
   the car is stopped after CMD_TIMEOUT seconds.
 - Publishes /web/depth_color (bgr8) so web_video_server can stream the
   16-bit depth image as MJPEG. Only runs while someone is watching.
+- Publishes /web/battery_status (std_msgs/String, JSON, 1 Hz): charge %, charging /
+  in use / steady, time to empty or full. See battery_estimator.py.
 
 /app/cmd_vel contract (odom_publisher_node, MentorPi_Acker):
   linear.x  = speed in m/s
@@ -14,6 +16,7 @@
 """
 import functools
 import http.server
+import json
 import math
 import os
 import threading
@@ -24,9 +27,13 @@ import numpy as np
 import rclpy
 from cv_bridge import CvBridge
 from geometry_msgs.msg import Twist
+from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
+from std_msgs.msg import String, UInt16
+
+from battery_estimator import BatteryEstimator
 
 HTTP_PORT = int(os.environ.get('WEB_UI_PORT', 8000))
 WEB_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -38,6 +45,9 @@ CMD_TIMEOUT = 0.5             # s without a web command while moving -> stop
 DEPTH_TOPIC = '/ascamera/camera_publisher/depth0/image_raw'
 DEPTH_MAX_MM = 4000           # colour scale: 0 m (red) .. 4 m (blue)
 DEPTH_PERIOD = 0.1            # s, colorize at most 10 Hz
+
+BATTERY_TOPIC = '/ros_robot_controller/battery'   # UInt16, mV, ~1 Hz
+DRIVING_SPEED = 0.02          # m/s from /odom; above -> motors loaded, voltage sags
 
 
 def clamp(value, limit):
@@ -59,6 +69,13 @@ class WebBridge(Node):
         self.last_depth_time = 0.0
         self.create_subscription(Image, DEPTH_TOPIC, self.on_depth, qos_profile_sensor_data)
 
+        self.battery = BatteryEstimator()
+        self.battery_v = None
+        self.battery_pub = self.create_publisher(String, '/web/battery_status', 1)
+        self.create_subscription(UInt16, BATTERY_TOPIC, self.on_battery, 10)
+        self.create_subscription(Odometry, '/odom', self.on_odom, 10)
+        self.create_timer(1.0, self.publish_battery)
+
     def on_cmd(self, msg):
         out = Twist()
         out.linear.x = clamp(msg.linear.x, MAX_SPEED)
@@ -75,6 +92,18 @@ class WebBridge(Node):
     def stop(self):
         self.cmd_pub.publish(Twist())
         self.moving = False
+
+    def on_battery(self, msg):
+        self.battery_v = msg.data / 1000.0
+        self.battery.add(time.monotonic(), self.battery_v)
+
+    def on_odom(self, msg):
+        if abs(msg.twist.twist.linear.x) > DRIVING_SPEED:
+            self.battery.driving(time.monotonic())
+
+    def publish_battery(self):
+        if self.battery_v is not None:
+            self.battery_pub.publish(String(data=json.dumps(self.battery.status(self.battery_v))))
 
     def on_depth(self, msg):
         if self.depth_pub.get_subscription_count() == 0:
@@ -119,7 +148,10 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        node.stop()
+        try:
+            node.stop()  # fails harmlessly if ROS already shut down (e.g. SIGTERM)
+        except Exception:
+            pass
         node.destroy_node()
         rclpy.try_shutdown()
 

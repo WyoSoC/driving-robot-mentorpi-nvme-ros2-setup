@@ -38,6 +38,9 @@
     border-radius: 999px; background: var(--panel); border: 1px solid var(--line);
     font-size: 12px; color: var(--muted); white-space: nowrap; }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--bad); flex: none; }
+  .pill.batt-charging { color: var(--ok); border-color: var(--ok); }
+  .pill.batt-low { color: var(--warn); border-color: var(--warn); }
+  .pill.batt-critical { color: #fff; background: var(--bad); border-color: var(--bad); }
   .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); }
   .spacer { flex: 1; }
 
@@ -137,7 +140,7 @@
 <header>
   <h1>MentorPi <span>· web control</span></h1>
   <span class="pill"><span class="dot" id="connDot"></span><span id="connText">Connecting…</span></span>
-  <span class="pill" title="Battery voltage (2S pack, % approximate)">🔋 <span id="battText">--</span></span>
+  <span class="pill" id="battPill" title="Battery">🔋 <span id="battText">--</span></span>
   <span class="spacer"></span>
   <button class="estop" id="estop" title="Emergency stop (Space)">E-STOP</button>
 </header>
@@ -253,7 +256,6 @@ const VIDEO_TOPICS = {
 };
 const MAX_STEER = 40 * Math.PI / 180;   // matches joystick_control / server clamp
 const CMD_TOPIC = '/web/cmd_vel';       // relayed to /app/cmd_vel by web_ui_server.py
-const BATT_EMPTY = 6.6, BATT_FULL = 8.4; // 2S Li-ion, volts
 
 const $ = id => document.getElementById(id);
 const deg = r => r * 180 / Math.PI;
@@ -656,11 +658,39 @@ function drawTrail() {
 }
 
 // ---------- Battery / system ----------
+// Raw voltage keeps the sensor light fresh; charge %, state and time estimates come from
+// web_ui_server.py (/web/battery_status, see battery_estimator.py), which keeps the history.
+let battStatusAt = 0, battState = null, battLevel = 'ok', battLastLogged = null;
+const dur = m => m >= 90 ? `${Math.floor(m / 60)} h ${String(Math.round(m % 60)).padStart(2, '0')} min` : `${Math.round(m)} min`;
 ros.subscribe('/ros_robot_controller/battery', 'std_msgs/msg/UInt16', msg => {
   const v = msg.data / 1000;
-  const pct = Math.round(Math.max(0, Math.min(1, (v - BATT_EMPTY) / (BATT_FULL - BATT_EMPTY))) * 100);
-  $('battText').textContent = `${v.toFixed(2)} V · ${pct}%`;
-  touch('battery', `${v.toFixed(2)} V`);
+  touch('battery', `${v.toFixed(2)} V` + (battState ? ` · ${battState}` : ''));
+  if (performance.now() - battStatusAt > 5000) $('battText').textContent = `${v.toFixed(2)} V`;  // no estimator yet
+});
+ros.subscribe('/web/battery_status', 'std_msgs/msg/String', msg => {
+  const b = JSON.parse(msg.data);
+  battStatusAt = performance.now();
+  const words = { charging: 'charging', discharging: 'in use', steady: 'steady', full: 'full', collecting: 'measuring' };
+  let text = `${b.soc}%`, icon = '🔋';
+  if (b.state === 'charging') { icon = '⚡'; text = `Charging ${b.soc}% · full in ~${dur(b.eta_min)}`; }
+  else if (b.state === 'discharging') text += ` · ~${dur(b.eta_min)} left`;
+  else if (b.state === 'full') { icon = '🔌'; text = 'Full'; }
+  else if (b.state === 'collecting') text += ' · estimating…';
+  if (b.level === 'critical') text = `CHARGE NOW · ${text}`;
+  else if (b.level === 'low') text = `Low · ${text}`;
+  $('battPill').firstChild.textContent = icon + ' ';
+  $('battText').textContent = text;
+  $('battPill').className = 'pill' + (b.level !== 'ok' ? ` batt-${b.level}` : b.state === 'charging' ? ' batt-charging' : '');
+  $('battPill').title = `Battery ${b.v.toFixed(2)} V (2S Li-ion, 6.4–8.4 V), ${words[b.state]}` +
+    (b.rate != null ? `, ${b.rate > 0 ? '+' : ''}${b.rate.toFixed(2)} %/min` : '') +
+    (b.state === 'collecting' ? `, trend in ~${Math.ceil(b.collecting_s / 60)} min` : '') +
+    '.\nCharge % and times are estimates from voltage only; charging is only visible with the car switched on.';
+  battState = words[b.state];
+  if (b.state !== 'collecting' && b.state !== battLastLogged) {
+    if (battLastLogged !== null || b.state === 'charging') log(`Battery: ${words[b.state]} (${b.soc}%, ${b.v.toFixed(2)} V)`);
+    battLastLogged = b.state;
+  }
+  if (b.level !== battLevel) { if (b.level !== 'ok') log(`Battery ${b.level}: ${b.v.toFixed(2)} V — charge soon`); battLevel = b.level; }
 });
 ros.subscribe('/client_count', 'std_msgs/msg/Int32', msg => touch('clients', String(msg.data)));
 ros.subscribe('/ros_robot_controller/button', 'ros_robot_controller_msgs/msg/ButtonState',
