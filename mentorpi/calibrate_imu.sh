@@ -16,12 +16,13 @@ CALIB="$DIR/calibration/imu_calib.yaml"
 docker ps --format '{{.Names}}' | grep -q "^$CONTAINER$" || { echo "MentorPi container not running" >&2; exit 1; }
 systemctl is-active -q mentorpi-bringup || { echo "mentorpi-bringup not running" >&2; exit 1; }
 
-cleanup() { docker exec "$CONTAINER" pkill -f "do_calib|$TMP" 2>/dev/null || true; }
+cleanup() { docker exec "$CONTAINER" pkill -f "python3 -u - $TMP" 2>/dev/null || true; }
 trap 'cleanup; echo; echo "Stopped. Calibration unchanged."; exit 130' INT TERM
 
 cat <<'EOF'
 IMU calibration
-- Use a flat, level table. A box or a stack of books helps to hold the car square in each pose.
+- Use a flat, level surface. A box or a stack of books helps to hold the car in each pose;
+  a few degrees of tilt is fine.
 - Keep the car switched on. Mind the cables; the wheels won't be driven.
 - The script waits until the car is in the requested pose and still, then records ~11 s.
 - Press Ctrl+C to stop at any time; nothing is changed unless all 6 poses succeed.
@@ -31,8 +32,12 @@ read -rp "Press Enter to start... "
 echo
 
 docker exec "$CONTAINER" rm -f "$TMP"
-docker exec -i -u ubuntu "$CONTAINER" /bin/zsh -c "source ~/.zshrc >/dev/null 2>&1; exec python3 -u - $TMP" \
-    < "$DIR/tools/imu_calib_guided.py" || { cleanup; exit 1; }
+if ! docker exec -i -u ubuntu -e IMU_CALIB_TEST="${IMU_CALIB_TEST:-0}" "$CONTAINER" \
+        /bin/zsh -c "source ~/.zshrc >/dev/null 2>&1; exec python3 -u - $TMP" < "$DIR/tools/imu_calib_guided.py"; then
+    cleanup
+    echo "Calibration did not complete; $CALIB was NOT changed." >&2
+    exit 1
+fi
 
 NEW=$(mktemp)
 docker cp "$CONTAINER:$TMP" "$NEW" >/dev/null

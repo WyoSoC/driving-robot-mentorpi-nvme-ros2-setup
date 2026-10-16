@@ -151,25 +151,30 @@ Either copy `imu_calib.yaml` from that car's own Hiwonder SD card
 ```
 
 You place the car in 6 poses, about 11 s each. The script shows which way is "up" right now and
-starts recording only when the car is in the requested pose and still:
+starts recording only when the car is in the requested pose and still. Axes of the MentorPi M1
+controller board: **X+ = right side, Y+ = front, Z+ = up**.
 
-| Step | Axis up | Car pose (hint; follow the live reading) |
+| Step | Axis up | Car pose |
 |---|---|---|
-| 1 | X+ | standing on its rear end, front pointing up |
-| 2 | X- | standing on its front end |
-| 3 | Y+ | lying on its right side (left side up) |
-| 4 | Y- | lying on its left side |
+| 1 | X+ | lying on its LEFT side (right side facing up) |
+| 2 | X- | lying on its RIGHT side |
+| 3 | Y+ | standing on its REAR end, front pointing up |
+| 4 | Y- | standing on its FRONT end |
 | 5 | Z+ | normal, on its wheels |
 | 6 | Z- | upside down; support the body so the lidar/camera carry no weight |
 
-Use a flat, level table, and a box or books to hold each pose square. If the car moves while
-recording, or the results look wrong (scale outside 0.9–1.1, bias above 1.5 m/s²), nothing is
-changed. On success the old file is kept as `calibration/imu_calib.yaml.bak-<date>` and bringup is
-restarted. To undo: copy the `.bak` file back and `sudo systemctl restart mentorpi-bringup`.
+A few degrees of tilt is fine (a car body never sits perfectly square on its side). If the car
+moves while recording, or the results look wrong (scale outside 0.9–1.1, bias above 1.5 m/s²),
+nothing is changed. On success the old file is kept as `calibration/imu_calib.yaml.bak-<date>`
+and bringup is restarted; at rest the corrected reading (`/imu_corrected`) should have a
+magnitude of about 9.81. To undo: copy the `.bak` file back and `sudo systemctl restart mentorpi-bringup`.
 
-(The script wraps `imu_calib do_calib`; the manual equivalent is
-`ros2 run imu_calib do_calib --ros-args -r imu:=/ros_robot_controller/imu_raw -p output_file:=<file>`.
-Note the parameter is `output_file`, not `calib_file`.)
+Method: per axis, scale = g / ((up − down) / 2) and offset = (up + down) / 2, written as a
+diagonal `SM` plus `bias` (`apply_calib` computes `SM × raw − bias`). Hiwonder's `imu_calib do_calib`
+is **not** used: its 12-parameter fit assumes perfectly square poses and turned the few degrees
+of tilt into false cross-axis terms. On car 2 it gave a 2.7% error at rest, against 0.04% for the
+per-axis model computed from the same poses. (If you run `do_calib` by hand, its parameter is
+`output_file`, not `calib_file`.)
 
 ### Odometry: `calibrate_params.yaml`
 
