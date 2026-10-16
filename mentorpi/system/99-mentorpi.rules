@@ -1,0 +1,6 @@
+# MentorPi serial devices (installed to /etc/udev/rules.d/ by install.sh)
+# STM32 motor/IMU controller (CH9102)
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d4", SYMLINK+="rrc", MODE="0666"
+# MS200 lidar (CH340 rev 2.64). Some cars also have a second CH340 (e.g. a voice
+# module, rev 82.33, behind a 1a86:8091 hub); bcdDevice keeps /dev/ldlidar on the lidar.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", ATTRS{bcdDevice}=="0264", SYMLINK+="ldlidar", MODE="0666"

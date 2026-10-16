@@ -1,0 +1,11 @@
+# Per-car files: created by install.sh, never committed
+car.env
+calibration/
+# Hiwonder factory leftovers that may exist in an extracted kit
+tool/
+mentorpi/
+lab.ico
+.expand_rootfs.sh
+expand_rootfs.service
+__pycache__/
+*.pyc

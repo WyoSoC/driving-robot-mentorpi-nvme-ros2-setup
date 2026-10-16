@@ -1,0 +1,58 @@
+#!/bin/bash
+# Start or restart the MentorPi factory Docker container.
+# Adapted from the Hiwonder SD card factory image for the NVMe setup.
+#
+# Per-car settings are applied from files next to this script:
+#   car.env        ROS_DOMAIN_ID (patched into the image's .typerc on every start)
+#   calibration/   IMU + odometry calibration, bind-mounted over the image defaults
+#   web_ui/        web control UI, bind-mounted at /home/ubuntu/web_ui
+
+set -e
+
+DIR=$(cd "$(dirname "$0")" && pwd)
+CONTAINER_NAME="MentorPi"
+IMAGE="mentorpi:factory"
+TYPERC=/home/ubuntu/ros2_ws/.typerc
+
+if [ ! -f "$DIR/car.env" ]; then
+    echo "Missing $DIR/car.env (copy car.env.example and set a unique ROS_DOMAIN_ID)" >&2
+    exit 1
+fi
+source "$DIR/car.env"
+
+# Allow X11 connections from the container (no-op when there is no display, e.g. at boot)
+xhost + >/dev/null 2>&1 || true
+
+if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+    echo "Removing existing ${CONTAINER_NAME} container..."
+    docker rm -f "${CONTAINER_NAME}" >/dev/null
+fi
+
+mkdir -p "$HOME/docker/tmp"
+UID_NUM=$(id -u)
+
+echo "Starting ${CONTAINER_NAME} (${CAR_NAME}, ROS_DOMAIN_ID=${ROS_DOMAIN_ID})..."
+docker run -d \
+    --name "${CONTAINER_NAME}" \
+    --privileged \
+    --network host \
+    -e DISPLAY=:0 \
+    -e PULSE_SERVER=unix:/run/user/${UID_NUM}/pulse/native \
+    -e LIBGL_ALWAYS_SOFTWARE=1 \
+    -e XAUTHORITY="" \
+    -v /dev:/dev \
+    -v /tmp/.X11-unix:/tmp/.X11-unix \
+    -v /run/user/${UID_NUM}/pulse:/run/user/${UID_NUM}/pulse \
+    -v /var/lib/dbus:/var/lib/dbus \
+    -v "$HOME/docker/tmp:/home/ubuntu/shared" \
+    -v "$DIR/web_ui:/home/ubuntu/web_ui" \
+    -v "$DIR/calibration/imu_calib.yaml:/home/ubuntu/ros2_ws/src/calibration/config/imu_calib.yaml" \
+    -v "$DIR/calibration/calibrate_params.yaml:/home/ubuntu/ros2_ws/src/driver/controller/config/calibrate_params.yaml" \
+    "${IMAGE}" \
+    tail -f /dev/null >/dev/null
+
+# The image hardcodes ROS_DOMAIN_ID=0; give each car its own domain.
+docker exec "${CONTAINER_NAME}" sed -i "s/^export ROS_DOMAIN_ID=.*/export ROS_DOMAIN_ID=${ROS_DOMAIN_ID}/" "$TYPERC"
+
+echo "${CONTAINER_NAME} container started."
+echo "To launch ROS2: $DIR/start_node.sh"

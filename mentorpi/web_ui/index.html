@@ -1,0 +1,673 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>MentorPi Control</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --panel-2: #1c232c;
+    --line: #2a323d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #3fb6ff;
+    --ok: #3fb950;
+    --warn: #d29922;
+    --bad: #f85149;
+    --radius: 12px;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  body { padding: 0 16px 24px; padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px)); }
+
+  header {
+    position: sticky; top: 0; z-index: 10;
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 12px 0; padding-top: calc(12px + env(safe-area-inset-top, 0px));
+    background: var(--bg); border-bottom: 1px solid var(--line); margin-bottom: 16px;
+  }
+  header h1 { font-size: 17px; margin: 0; letter-spacing: .02em; }
+  header h1 span { color: var(--muted); font-weight: 400; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px;
+    border-radius: 999px; background: var(--panel); border: 1px solid var(--line);
+    font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--bad); flex: none; }
+  .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); }
+  .spacer { flex: 1; }
+
+  .estop { border: 0; border-radius: 10px; padding: 10px 18px; font-weight: 700; font-size: 14px;
+    letter-spacing: .06em; color: #fff; background: var(--bad); cursor: pointer;
+    box-shadow: 0 0 0 3px rgba(248,81,73,.25); }
+  .estop.engaged { background: var(--warn); color: #111; box-shadow: 0 0 0 3px rgba(210,153,34,.35); }
+
+  /* Desktop: left column = video + IMU/odometry pair, right column = drive + lidar.
+     Narrow: columns dissolve and panels stack in priority order. */
+  main { display: grid; gap: 16px; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); align-items: start; }
+  .col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  .pair { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  #systemPanel { grid-column: 1 / -1; }
+  @media (max-width: 900px) {
+    main { display: flex; flex-direction: column; align-items: stretch; }
+    .col, .pair { display: contents; }
+    #videoPanel { order: 1; } #drivePanel { order: 2; } #lidarPanel { order: 3; }
+    #imuPanel { order: 4; } #odomPanel { order: 5; } #systemPanel { order: 6; }
+  }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 14px; min-width: 0; }
+  .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted);
+    margin: 0 0 10px; display: flex; align-items: center; gap: 8px; }
+  .panel h2 .right { margin-left: auto; text-transform: none; letter-spacing: 0; }
+
+  /* Video */
+  #videoPanel { display: flex; flex-direction: column; }
+  .tabs { display: inline-flex; background: var(--panel-2); border-radius: 8px; padding: 2px; }
+  .tabs button { border: 0; background: none; color: var(--muted); padding: 4px 10px; border-radius: 6px;
+    font: inherit; font-size: 12px; cursor: pointer; }
+  .tabs button.active { background: var(--line); color: var(--text); }
+  .video-wrap { position: relative; background: #000; border-radius: 8px; overflow: hidden;
+    aspect-ratio: 4 / 3; width: 100%; }
+  .video-wrap img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .video-msg { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); }
+  .hud { position: absolute; left: 10px; right: 10px; bottom: 10px; display: flex; gap: 8px; flex-wrap: wrap;
+    pointer-events: none; }
+  .hud .pill { background: rgba(13,17,23,.75); color: var(--text); font-family: var(--mono); }
+  .live { position: absolute; top: 10px; left: 10px; }
+  .live .pill { background: rgba(13,17,23,.75); }
+
+  /* Drive */
+  .pad { position: relative; width: min(100%, 240px); aspect-ratio: 1; margin: 4px auto 12px;
+    border-radius: 50%; background: radial-gradient(circle, var(--panel-2) 0 60%, #11161d 100%);
+    border: 1px solid var(--line); touch-action: none; user-select: none; -webkit-user-select: none; cursor: grab; }
+  .pad::before, .pad::after { content: ""; position: absolute; background: var(--line); }
+  .pad::before { left: 50%; top: 10%; bottom: 10%; width: 1px; }
+  .pad::after { top: 50%; left: 10%; right: 10%; height: 1px; }
+  .knob { position: absolute; left: 50%; top: 50%; width: 30%; height: 30%; margin: -15% 0 0 -15%;
+    border-radius: 50%; background: var(--accent); box-shadow: 0 4px 16px rgba(63,182,255,.4); z-index: 1;
+    transition: transform .12s ease-out; }
+  .pad.active .knob { transition: none; }
+  .pad.disabled { opacity: .4; cursor: not-allowed; }
+  .row { display: flex; align-items: center; gap: 10px; margin: 8px 0; flex-wrap: wrap; }
+  .row label { color: var(--muted); font-size: 12px; min-width: 76px; }
+  .row input[type=range] { flex: 1; min-width: 120px; accent-color: var(--accent); }
+  .val { font-family: var(--mono); min-width: 64px; text-align: right; }
+  .btn { border: 1px solid var(--line); background: var(--panel-2); color: var(--text);
+    padding: 7px 12px; border-radius: 8px; font: inherit; font-size: 13px; cursor: pointer; }
+  .btn:hover { border-color: var(--muted); }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 8px; }
+  kbd { font-family: var(--mono); font-size: 11px; background: var(--panel-2); border: 1px solid var(--line);
+    border-radius: 4px; padding: 1px 5px; }
+  .meters { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 4px; }
+  .meter { background: var(--panel-2); border-radius: 8px; padding: 8px 10px; }
+  .meter .k { color: var(--muted); font-size: 11px; }
+  .meter .v { font-family: var(--mono); font-size: 18px; }
+  .bar { height: 4px; background: var(--line); border-radius: 2px; margin-top: 6px; position: relative; overflow: hidden; }
+  .bar i { position: absolute; top: 0; bottom: 0; background: var(--accent); }
+
+  /* Canvases */
+  canvas { width: 100%; display: block; background: #0a0e13; border-radius: 8px; }
+  #lidar { aspect-ratio: 1; }
+  #attitude { aspect-ratio: 2 / 1; }
+  #trail { aspect-ratio: 2 / 1; }
+  select { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 6px;
+    font: inherit; font-size: 12px; padding: 2px 6px; }
+
+  .readout { display: grid; grid-template-columns: repeat(auto-fit, minmax(92px, 1fr)); gap: 8px; margin-top: 10px; }
+  .readout div { background: var(--panel-2); border-radius: 8px; padding: 6px 8px; }
+  .readout .k { color: var(--muted); font-size: 11px; }
+  .readout .v { font-family: var(--mono); font-size: 14px; white-space: nowrap; }
+
+  /* System */
+  .sys { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; }
+  .sys .item { display: flex; align-items: center; gap: 8px; background: var(--panel-2); border-radius: 8px; padding: 8px 10px; }
+  .sys .item .v { margin-left: auto; font-family: var(--mono); color: var(--muted); font-size: 12px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  #log { margin-top: 10px; font-family: var(--mono); font-size: 12px; color: var(--muted); max-height: 120px;
+    overflow: auto; background: #0a0e13; border-radius: 8px; padding: 8px 10px; }
+  #log div { white-space: pre-wrap; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>MentorPi <span>· web control</span></h1>
+  <span class="pill"><span class="dot" id="connDot"></span><span id="connText">Connecting…</span></span>
+  <span class="pill" title="Battery voltage (2S pack, % approximate)">🔋 <span id="battText">--</span></span>
+  <span class="spacer"></span>
+  <button class="estop" id="estop" title="Emergency stop (Space)">E-STOP</button>
+</header>
+
+<main>
+  <div class="col">
+  <section class="panel" id="videoPanel">
+    <h2>Camera
+      <span class="right tabs" id="videoTabs">
+        <button data-view="rgb" class="active">RGB</button>
+        <button data-view="depth">Depth</button>
+      </span>
+    </h2>
+    <div class="video-wrap">
+      <img id="video" alt="Live camera stream">
+      <div class="video-msg" id="videoMsg">Connecting to video…</div>
+      <div class="live"><span class="pill"><span class="dot" id="videoDot"></span><span id="videoText">VIDEO</span></span></div>
+      <div class="hud">
+        <span class="pill" id="hudCmd">cmd 0.00 m/s</span>
+        <span class="pill" id="hudSteer">steer 0°</span>
+        <span class="pill" id="hudSpeed">odom 0.00 m/s</span>
+        <span class="pill" id="hudFront">front --</span>
+      </div>
+    </div>
+  </section>
+
+  <div class="pair">
+  <section class="panel" id="imuPanel">
+    <h2>IMU</h2>
+    <canvas id="attitude"></canvas>
+    <div class="readout">
+      <div><div class="k">Roll</div><div class="v" id="iRoll">--</div></div>
+      <div><div class="k">Pitch</div><div class="v" id="iPitch">--</div></div>
+      <div><div class="k">Yaw</div><div class="v" id="iYaw">--</div></div>
+      <div><div class="k">Gyro z</div><div class="v" id="iGz">--</div></div>
+      <div><div class="k">Accel x</div><div class="v" id="iAx">--</div></div>
+      <div><div class="k">Accel y</div><div class="v" id="iAy">--</div></div>
+      <div><div class="k">Accel z</div><div class="v" id="iAz">--</div></div>
+    </div>
+  </section>
+
+  <section class="panel" id="odomPanel">
+    <h2>Odometry <span class="right"><button class="btn" id="trailReset" style="padding:2px 8px;font-size:12px">Clear trail</button></span></h2>
+    <canvas id="trail"></canvas>
+    <div class="readout">
+      <div><div class="k">X</div><div class="v" id="oX">--</div></div>
+      <div><div class="k">Y</div><div class="v" id="oY">--</div></div>
+      <div><div class="k">Heading</div><div class="v" id="oYaw">--</div></div>
+      <div><div class="k">Speed</div><div class="v" id="oV">--</div></div>
+      <div><div class="k">Turn rate</div><div class="v" id="oW">--</div></div>
+      <div><div class="k">Distance</div><div class="v" id="oDist">0.00 m</div></div>
+    </div>
+  </section>
+  </div>
+  </div>
+
+  <div class="col">
+  <section class="panel" id="drivePanel">
+    <h2>Drive <span class="right pill" id="driveState">idle</span></h2>
+    <div class="pad" id="pad"><div class="knob" id="knob"></div></div>
+    <div class="row">
+      <label for="speedLimit">Speed limit</label>
+      <input type="range" id="speedLimit" min="0.1" max="0.7" step="0.05" value="0.3">
+      <span class="val" id="speedLimitVal">0.30 m/s</span>
+    </div>
+    <div class="row">
+      <button class="btn" id="centerBtn">Center steering</button>
+      <button class="btn" id="hornBtn">Horn</button>
+    </div>
+    <div class="meters">
+      <div class="meter"><div class="k">Throttle</div><div class="v" id="mThrottle">0.00</div>
+        <div class="bar"><i id="barThrottle"></i></div></div>
+      <div class="meter"><div class="k">Steering</div><div class="v" id="mSteer">0°</div>
+        <div class="bar"><i id="barSteer"></i></div></div>
+    </div>
+    <div class="hint">Drag the pad, or use <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / arrow keys.
+      <kbd>Space</kbd> = E-stop. The car stops if this page loses connection.</div>
+  </section>
+
+  <section class="panel" id="lidarPanel">
+    <h2>Lidar <span class="right">
+      <select id="lidarRange" aria-label="Lidar view range">
+        <option value="1">1 m</option><option value="2" selected>2 m</option>
+        <option value="4">4 m</option><option value="8">8 m</option>
+      </select></span></h2>
+    <canvas id="lidar"></canvas>
+    <div class="readout">
+      <div><div class="k">Nearest</div><div class="v" id="lNear">--</div></div>
+      <div><div class="k">Bearing</div><div class="v" id="lBear">--</div></div>
+      <div><div class="k">Front ±30°</div><div class="v" id="lFront">--</div></div>
+      <div><div class="k">Points</div><div class="v" id="lPts">--</div></div>
+    </div>
+  </section>
+  </div>
+
+  <section class="panel" id="systemPanel">
+    <h2>System</h2>
+    <div class="sys" id="sys"></div>
+    <div id="log"></div>
+  </section>
+</main>
+
+<script>
+'use strict';
+
+// ---------- Config ----------
+const HOST = location.hostname || 'localhost';
+const ROSBRIDGE_URL = `ws://${HOST}:9090`;
+const VIDEO_URL = `http://${HOST}:8080`;
+const VIDEO_TOPICS = {
+  rgb: '/ascamera/camera_publisher/rgb0/image',
+  depth: '/web/depth_color',
+};
+const MAX_STEER = 40 * Math.PI / 180;   // matches joystick_control / server clamp
+const CMD_TOPIC = '/web/cmd_vel';       // relayed to /app/cmd_vel by web_ui_server.py
+const BATT_EMPTY = 6.6, BATT_FULL = 8.4; // 2S Li-ion, volts
+
+const $ = id => document.getElementById(id);
+const deg = r => r * 180 / Math.PI;
+const fmt = (v, d = 2) => (v == null || !isFinite(v)) ? '--' : v.toFixed(d);
+
+function log(msg) {
+  const el = $('log');
+  const line = document.createElement('div');
+  line.textContent = `${new Date().toLocaleTimeString()}  ${msg}`;
+  el.prepend(line);
+  while (el.childElementCount > 50) el.lastChild.remove();
+}
+
+function storageGet(key) { try { return localStorage.getItem(key); } catch { return null; } }
+function storageSet(key, val) { try { localStorage.setItem(key, val); } catch { /* ignore */ } }
+
+// ---------- Minimal rosbridge v2 client ----------
+class RosBridge {
+  constructor(url, onState) {
+    this.url = url; this.onState = onState;
+    this.subs = new Map(); this.ads = new Map();
+    this.connect();
+  }
+  connect() {
+    const ws = this.ws = new WebSocket(this.url);
+    ws.onopen = () => {
+      for (const [topic, s] of this.subs) this.sendSub(topic, s);
+      for (const [topic, type] of this.ads) this.send({ op: 'advertise', topic, type });
+      this.onState(true);
+    };
+    ws.onclose = () => { this.onState(false); setTimeout(() => this.connect(), 2000); };
+    ws.onmessage = e => {
+      let m;
+      try { m = JSON.parse(e.data); }
+      catch { m = JSON.parse(e.data.replace(/-?\bInfinity\b|\bNaN\b/g, 'null')); }
+      if (m.op === 'publish') {
+        const s = this.subs.get(m.topic);
+        if (s) s.cb(m.msg);
+      }
+    };
+  }
+  get connected() { return this.ws && this.ws.readyState === WebSocket.OPEN; }
+  send(obj) { if (this.connected) this.ws.send(JSON.stringify(obj)); }
+  sendSub(topic, s) {
+    this.send({ op: 'subscribe', topic, type: s.type, throttle_rate: s.throttle, queue_length: 1 });
+  }
+  subscribe(topic, type, cb, throttle = 0) {
+    const s = { type, cb, throttle };
+    this.subs.set(topic, s);
+    this.sendSub(topic, s);
+  }
+  advertise(topic, type) { this.ads.set(topic, type); this.send({ op: 'advertise', topic, type }); }
+  publish(topic, msg) { this.send({ op: 'publish', topic, msg }); }
+}
+
+// ---------- Sensor freshness ----------
+const sensors = {
+  rosbridge: { label: 'rosbridge', last: 0, info: '' },
+  video: { label: 'Video stream', last: 0, info: '' },
+  lidar: { label: 'Lidar', last: 0, info: '' },
+  imu: { label: 'IMU', last: 0, info: '' },
+  odom: { label: 'Odometry', last: 0, info: '' },
+  battery: { label: 'Battery', last: 0, info: '' },
+  clients: { label: 'Web clients', last: 0, info: '' },
+};
+const sysEl = $('sys');
+for (const [key, s] of Object.entries(sensors)) {
+  const item = document.createElement('div');
+  item.className = 'item';
+  item.innerHTML = `<span class="dot"></span><span>${s.label}</span><span class="v"></span>`;
+  sysEl.append(item);
+  s.dot = item.querySelector('.dot'); s.val = item.querySelector('.v');
+}
+function touch(key, info) { sensors[key].last = performance.now(); if (info != null) sensors[key].info = info; }
+setInterval(() => {
+  const now = performance.now();
+  for (const [key, s] of Object.entries(sensors)) {
+    const age = now - s.last;
+    // client_count is only published on change; battery is slow
+    const timeout = key === 'clients' ? Infinity : key === 'battery' ? 10000 : 2000;
+    const fresh = key === 'rosbridge' || key === 'video' ? s.ok : age < timeout;
+    s.dot.className = 'dot' + (fresh ? ' ok' : (s.last ? ' warn' : ''));
+    s.val.textContent = s.info;
+  }
+}, 500);
+
+// ---------- Connection ----------
+const ros = new RosBridge(ROSBRIDGE_URL, up => {
+  $('connDot').className = 'dot' + (up ? ' ok' : '');
+  $('connText').textContent = up ? 'Connected' : 'Disconnected';
+  sensors.rosbridge.ok = up; sensors.rosbridge.info = up ? HOST + ':9090' : 'retrying…';
+  log(up ? 'Connected to rosbridge' : 'rosbridge connection lost, retrying');
+  if (!up) releaseAll();
+});
+ros.advertise(CMD_TOPIC, 'geometry_msgs/msg/Twist');
+ros.advertise('/ros_robot_controller/set_buzzer', 'ros_robot_controller_msgs/msg/BuzzerState');
+
+// ---------- Video ----------
+let videoView = 'rgb', videoRetry = null;
+const video = $('video');
+function setVideo(view) {
+  videoView = view;
+  for (const b of $('videoTabs').children) b.classList.toggle('active', b.dataset.view === view);
+  clearTimeout(videoRetry);
+  $('videoMsg').hidden = false; $('videoMsg').textContent = 'Connecting to video…';
+  video.src = `${VIDEO_URL}/stream?topic=${VIDEO_TOPICS[view]}&type=mjpeg&quality=70&t=${Date.now()}`;
+}
+video.onload = () => {
+  $('videoMsg').hidden = true;
+  $('videoDot').className = 'dot ok'; $('videoText').textContent = 'LIVE · ' + videoView.toUpperCase();
+  sensors.video.ok = true; sensors.video.info = videoView;
+};
+video.onerror = () => {
+  $('videoMsg').hidden = false; $('videoMsg').textContent = 'Video unavailable, retrying…';
+  $('videoDot').className = 'dot'; $('videoText').textContent = 'NO VIDEO';
+  sensors.video.ok = false; sensors.video.info = 'retrying…';
+  clearTimeout(videoRetry); videoRetry = setTimeout(() => setVideo(videoView), 2000);
+};
+$('videoTabs').addEventListener('click', e => { if (e.target.dataset.view) setVideo(e.target.dataset.view); });
+setVideo('rgb');
+
+// ---------- Drive ----------
+const drive = { joy: null, keys: new Set(), steer: 0, speed: 0, estop: false, idleSends: 0 };
+const pad = $('pad'), knob = $('knob');
+const speedLimit = $('speedLimit');
+const savedLimit = parseFloat(storageGet('mentorpi.speedLimit'));
+if (savedLimit >= 0.1 && savedLimit <= 0.7) speedLimit.value = savedLimit;
+function showLimit() { $('speedLimitVal').textContent = (+speedLimit.value).toFixed(2) + ' m/s'; }
+speedLimit.oninput = () => { showLimit(); storageSet('mentorpi.speedLimit', speedLimit.value); };
+showLimit();
+
+function padPoint(e) {
+  const r = pad.getBoundingClientRect();
+  const radius = r.width / 2 * 0.85;
+  let x = (e.clientX - r.left - r.width / 2) / radius;
+  let y = (e.clientY - r.top - r.height / 2) / radius;
+  const m = Math.hypot(x, y);
+  if (m > 1) { x /= m; y /= m; }
+  return { x, y, radius };
+}
+function setKnob(x, y, radius) { knob.style.transform = `translate(${x * radius}px, ${y * radius}px)`; }
+pad.addEventListener('pointerdown', e => {
+  if (drive.estop) return;
+  pad.setPointerCapture(e.pointerId);
+  pad.classList.add('active');
+  drive.joy = padPoint(e); setKnob(drive.joy.x, drive.joy.y, drive.joy.radius);
+});
+pad.addEventListener('pointermove', e => {
+  if (!drive.joy) return;
+  drive.joy = padPoint(e); setKnob(drive.joy.x, drive.joy.y, drive.joy.radius);
+});
+function releasePad() { drive.joy = null; pad.classList.remove('active'); setKnob(0, 0, 0); }
+pad.addEventListener('pointerup', releasePad);
+pad.addEventListener('pointercancel', releasePad);
+
+const KEYMAP = { KeyW: 'up', ArrowUp: 'up', KeyS: 'down', ArrowDown: 'down',
+                 KeyA: 'left', ArrowLeft: 'left', KeyD: 'right', ArrowRight: 'right' };
+addEventListener('keydown', e => {
+  if (e.target.closest && e.target.closest('input, select')) return;
+  if (e.code === 'Space') { e.preventDefault(); setEstop(true); return; }
+  const k = KEYMAP[e.code];
+  if (k) { e.preventDefault(); if (!drive.estop) drive.keys.add(k); }
+});
+addEventListener('keyup', e => { const k = KEYMAP[e.code]; if (k) drive.keys.delete(k); });
+
+function releaseAll() { drive.keys.clear(); releasePad(); }
+addEventListener('blur', releaseAll);
+document.addEventListener('visibilitychange', () => { if (document.hidden) releaseAll(); });
+
+function sendCmd(speed, steer) {
+  ros.publish(CMD_TOPIC, { linear: { x: speed, y: 0, z: 0 }, angular: { x: 0, y: 0, z: steer } });
+}
+
+function setEstop(on) {
+  drive.estop = on;
+  releaseAll();
+  drive.speed = 0; drive.steer = 0;
+  for (let i = 0; i < 3; i++) sendCmd(0, 0);
+  $('estop').classList.toggle('engaged', on);
+  $('estop').textContent = on ? 'RELEASE E-STOP' : 'E-STOP';
+  pad.classList.toggle('disabled', on);
+  log(on ? 'E-STOP engaged' : 'E-STOP released');
+}
+$('estop').onclick = () => setEstop(!drive.estop);
+
+$('centerBtn').onclick = () => { if (!drive.estop) { sendCmd(0, 0); log('Steering centered'); } };
+$('hornBtn').onclick = () => ros.publish('/ros_robot_controller/set_buzzer',
+  { freq: 1900, on_time: 0.1, off_time: 0.05, repeat: 2 });
+
+// 10 Hz control loop. Sends while input is active; a few zero commands after release.
+setInterval(() => {
+  let throttle = 0, steerIn = 0;
+  const keyboard = drive.keys.size > 0;
+  if (drive.joy) {
+    throttle = -drive.joy.y; steerIn = drive.joy.x;
+    drive.steer = steerIn;
+  } else if (keyboard) {
+    throttle = (drive.keys.has('up') ? 1 : 0) - (drive.keys.has('down') ? 1 : 0);
+    steerIn = (drive.keys.has('right') ? 1 : 0) - (drive.keys.has('left') ? 1 : 0);
+    drive.steer += Math.max(-0.25, Math.min(0.25, steerIn - drive.steer));  // smooth key steering
+  } else {
+    drive.steer = 0;
+  }
+  const active = !drive.estop && ros.connected && (drive.joy || keyboard);
+  drive.speed = active ? throttle * speedLimit.value : 0;
+  const steerRad = active ? -drive.steer * MAX_STEER : 0;   // ROS: positive = left
+
+  if (active) { sendCmd(drive.speed, steerRad); drive.idleSends = 0; }
+  else if (drive.idleSends < 3) { sendCmd(0, 0); drive.idleSends++; }
+
+  const steerDeg = deg(steerRad);
+  $('mThrottle').textContent = fmt(drive.speed);
+  $('mSteer').textContent = (steerDeg > 0 ? 'L ' : steerDeg < 0 ? 'R ' : '') + Math.abs(steerDeg).toFixed(0) + '°';
+  setBar($('barThrottle'), drive.speed / 0.7);
+  setBar($('barSteer'), -steerRad / MAX_STEER);
+  $('hudCmd').textContent = `cmd ${fmt(drive.speed)} m/s`;
+  $('hudSteer').textContent = `steer ${$('mSteer').textContent}`;
+  $('driveState').textContent = drive.estop ? 'E-STOP' : !ros.connected ? 'offline' : active ? 'driving' : 'idle';
+}, 100);
+
+function setBar(el, v) {   // v in [-1, 1], drawn from center
+  v = Math.max(-1, Math.min(1, v || 0));
+  el.style.left = (v < 0 ? 50 + v * 50 : 50) + '%';
+  el.style.width = Math.abs(v) * 50 + '%';
+}
+
+// ---------- Canvas helpers ----------
+function prepCanvas(c) {
+  const dpr = devicePixelRatio || 1;
+  const w = c.clientWidth, h = c.clientHeight;
+  if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) {
+    c.width = Math.round(w * dpr); c.height = Math.round(h * dpr);
+  }
+  const ctx = c.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  return { ctx, w, h };
+}
+function drawCar(ctx, x, y, heading, scale) {
+  // heading: radians, 0 = up on screen
+  ctx.save(); ctx.translate(x, y); ctx.rotate(heading);
+  const L = 0.22 * scale, W = 0.15 * scale;
+  ctx.fillStyle = 'rgba(63,182,255,.25)'; ctx.strokeStyle = '#3fb6ff'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.rect(-W / 2, -L / 2, W, L); ctx.fill(); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0, -L / 2 - 6); ctx.lineTo(-5, -L / 2 + 2); ctx.lineTo(5, -L / 2 + 2);
+  ctx.closePath(); ctx.fillStyle = '#3fb6ff'; ctx.fill();
+  ctx.restore();
+}
+
+// ---------- Lidar ----------
+let scan = null;
+ros.subscribe('/scan_raw', 'sensor_msgs/msg/LaserScan', msg => {
+  scan = msg;
+  let near = Infinity, nearA = 0, front = Infinity, n = 0;
+  msg.ranges.forEach((r, i) => {
+    if (r == null || r < msg.range_min || r > msg.range_max) return;
+    n++;
+    let a = msg.angle_min + i * msg.angle_increment;
+    a = Math.atan2(Math.sin(a), Math.cos(a));
+    if (r < near) { near = r; nearA = a; }
+    if (Math.abs(a) <= Math.PI / 6 && r < front) front = r;
+  });
+  $('lNear').textContent = isFinite(near) ? near.toFixed(2) + ' m' : '--';
+  $('lBear').textContent = isFinite(near) ? deg(nearA).toFixed(0) + '°' : '--';
+  $('lFront').textContent = isFinite(front) ? front.toFixed(2) + ' m' : 'clear';
+  $('hudFront').textContent = 'front ' + (isFinite(front) ? front.toFixed(2) + ' m' : 'clear');
+  $('lPts').textContent = n;
+  touch('lidar', `${n} pts`);
+  drawLidar();
+}, 100);
+$('lidarRange').onchange = drawLidar;
+
+function drawLidar() {
+  const { ctx, w, h } = prepCanvas($('lidar'));
+  const range = +$('lidarRange').value;
+  const cx = w / 2, cy = h / 2, scale = Math.min(w, h) / 2 / range * 0.95;
+  ctx.strokeStyle = '#1f2833'; ctx.fillStyle = '#5b6573'; ctx.font = '10px system-ui'; ctx.lineWidth = 1;
+  const step = range <= 2 ? 0.5 : range <= 4 ? 1 : 2;
+  for (let r = step; r <= range + 1e-6; r += step) {
+    ctx.beginPath(); ctx.arc(cx, cy, r * scale, 0, 2 * Math.PI); ctx.stroke();
+    ctx.fillText(r + ' m', cx + 3, cy - r * scale + 11);
+  }
+  ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, h); ctx.moveTo(0, cy); ctx.lineTo(w, cy); ctx.stroke();
+  // front ±30° sector
+  ctx.fillStyle = 'rgba(63,182,255,.06)';
+  ctx.beginPath(); ctx.moveTo(cx, cy);
+  ctx.arc(cx, cy, range * scale, -Math.PI / 2 - Math.PI / 6, -Math.PI / 2 + Math.PI / 6); ctx.fill();
+
+  if (scan) {
+    scan.ranges.forEach((r, i) => {
+      if (r == null || r < scan.range_min || r > scan.range_max || r > range * 1.05) return;
+      const a = scan.angle_min + i * scan.angle_increment;
+      const sx = cx - Math.sin(a) * r * scale;   // laser y (left) -> screen left
+      const sy = cy - Math.cos(a) * r * scale;   // laser x (forward) -> screen up
+      ctx.fillStyle = r < 0.3 ? '#f85149' : r < 0.6 ? '#d29922' : '#3fb950';
+      ctx.fillRect(sx - 1.5, sy - 1.5, 3, 3);
+    });
+  }
+  drawCar(ctx, cx, cy, 0, scale);
+}
+
+// ---------- IMU ----------
+let rpy = null;
+ros.subscribe('/imu/rpy/filtered', 'geometry_msgs/msg/Vector3Stamped', msg => {
+  rpy = msg.vector;
+  $('iRoll').textContent = deg(rpy.x).toFixed(1) + '°';
+  $('iPitch').textContent = deg(rpy.y).toFixed(1) + '°';
+  $('iYaw').textContent = deg(rpy.z).toFixed(1) + '°';
+  drawAttitude();
+}, 100);
+ros.subscribe('/imu', 'sensor_msgs/msg/Imu', msg => {
+  const a = msg.linear_acceleration, g = msg.angular_velocity;
+  $('iAx').textContent = fmt(a.x) + ' m/s²';
+  $('iAy').textContent = fmt(a.y) + ' m/s²';
+  $('iAz').textContent = fmt(a.z) + ' m/s²';
+  $('iGz').textContent = deg(g.z).toFixed(1) + '°/s';
+  touch('imu', `${fmt(Math.hypot(a.x, a.y, a.z), 1)} m/s²`);
+}, 100);
+
+function drawAttitude() {
+  const { ctx, w, h } = prepCanvas($('attitude'));
+  const roll = rpy ? rpy.x : 0, pitch = rpy ? rpy.y : 0, yaw = rpy ? rpy.z : 0;
+  // Artificial horizon (left half)
+  const r = Math.min(w / 2, h) / 2 - 8, cx = w / 4, cy = h / 2;
+  ctx.save();
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, 2 * Math.PI); ctx.clip();
+  ctx.translate(cx, cy); ctx.rotate(-roll);
+  const off = Math.max(-r, Math.min(r, deg(pitch) / 30 * r));
+  ctx.fillStyle = '#1b3a57'; ctx.fillRect(-2 * r, -2 * r + off, 4 * r, 2 * r);
+  ctx.fillStyle = '#4a3523'; ctx.fillRect(-2 * r, off, 4 * r, 2 * r);
+  ctx.strokeStyle = '#e6edf3'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(-2 * r, off); ctx.lineTo(2 * r, off); ctx.stroke();
+  ctx.restore();
+  ctx.strokeStyle = '#d29922'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(cx - r * 0.5, cy); ctx.lineTo(cx - r * 0.15, cy);
+  ctx.moveTo(cx + r * 0.15, cy); ctx.lineTo(cx + r * 0.5, cy); ctx.stroke();
+  ctx.beginPath(); ctx.arc(cx, cy, 3, 0, 2 * Math.PI); ctx.fillStyle = '#d29922'; ctx.fill();
+  ctx.strokeStyle = '#2a323d'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, 2 * Math.PI); ctx.stroke();
+
+  // Compass (right half), car heading = yaw (CCW positive), up = yaw 0
+  const kx = w * 3 / 4;
+  ctx.beginPath(); ctx.arc(kx, cy, r, 0, 2 * Math.PI); ctx.fillStyle = '#0f141a'; ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#5b6573'; ctx.font = '10px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (let i = 0; i < 12; i++) {
+    const a = i * Math.PI / 6;
+    ctx.beginPath();
+    ctx.moveTo(kx + Math.sin(a) * r * 0.85, cy - Math.cos(a) * r * 0.85);
+    ctx.lineTo(kx + Math.sin(a) * r, cy - Math.cos(a) * r);
+    ctx.strokeStyle = '#2a323d'; ctx.stroke();
+  }
+  ctx.fillText('0°', kx, cy - r * 0.68);
+  drawCar(ctx, kx, cy, -yaw, r * 2.4);
+  ctx.textAlign = 'start'; ctx.textBaseline = 'alphabetic';
+}
+
+// ---------- Odometry ----------
+let trail = [], odomDist = 0, pose = null;
+ros.subscribe('/odom', 'nav_msgs/msg/Odometry', msg => {
+  const p = msg.pose.pose.position, q = msg.pose.pose.orientation;
+  const yaw = Math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z));
+  const v = msg.twist.twist.linear.x, wz = msg.twist.twist.angular.z;
+  const last = trail[trail.length - 1];
+  if (!last || Math.hypot(p.x - last.x, p.y - last.y) > 0.02) {
+    if (last) odomDist += Math.hypot(p.x - last.x, p.y - last.y);
+    trail.push({ x: p.x, y: p.y });
+    if (trail.length > 3000) trail.shift();
+  }
+  pose = { x: p.x, y: p.y, yaw };
+  $('oX').textContent = fmt(p.x) + ' m';
+  $('oY').textContent = fmt(p.y) + ' m';
+  $('oYaw').textContent = deg(yaw).toFixed(1) + '°';
+  $('oV').textContent = fmt(v) + ' m/s';
+  $('oW').textContent = deg(wz).toFixed(1) + '°/s';
+  $('oDist').textContent = odomDist.toFixed(2) + ' m';
+  $('hudSpeed').textContent = `odom ${fmt(v)} m/s`;
+  touch('odom', `${fmt(v)} m/s`);
+  drawTrail();
+}, 100);
+$('trailReset').onclick = () => { trail = pose ? [{ x: pose.x, y: pose.y }] : []; odomDist = 0; drawTrail(); };
+
+function drawTrail() {
+  const { ctx, w, h } = prepCanvas($('trail'));
+  if (!pose) return;
+  // World view centred on the car, x up (forward at start), y left.
+  const scale = 80;   // px per metre
+  const cx = w / 2, cy = h / 2;
+  const toS = (x, y) => [cx - (y - pose.y) * scale, cy - (x - pose.x) * scale];
+  ctx.strokeStyle = '#1a212b'; ctx.lineWidth = 1;
+  const g = 0.5, ox = ((pose.y % g) + g) % g * scale, oy = ((pose.x % g) + g) % g * scale;
+  for (let x = (cx + ox) % (g * scale); x < w; x += g * scale) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); }
+  for (let y = (cy + oy) % (g * scale); y < h; y += g * scale) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
+  if (trail.length > 1) {
+    ctx.strokeStyle = '#3fb950'; ctx.lineWidth = 2; ctx.beginPath();
+    trail.forEach((p, i) => { const [sx, sy] = toS(p.x, p.y); i ? ctx.lineTo(sx, sy) : ctx.moveTo(sx, sy); });
+    ctx.stroke();
+  }
+  drawCar(ctx, cx, cy, -pose.yaw, scale);
+  ctx.fillStyle = '#5b6573'; ctx.font = '10px system-ui'; ctx.fillText('grid 0.5 m', 6, h - 6);
+}
+
+// ---------- Battery / system ----------
+ros.subscribe('/ros_robot_controller/battery', 'std_msgs/msg/UInt16', msg => {
+  const v = msg.data / 1000;
+  const pct = Math.round(Math.max(0, Math.min(1, (v - BATT_EMPTY) / (BATT_FULL - BATT_EMPTY))) * 100);
+  $('battText').textContent = `${v.toFixed(2)} V · ${pct}%`;
+  touch('battery', `${v.toFixed(2)} V`);
+});
+ros.subscribe('/client_count', 'std_msgs/msg/Int32', msg => touch('clients', String(msg.data)));
+ros.subscribe('/ros_robot_controller/button', 'ros_robot_controller_msgs/msg/ButtonState',
+  msg => log(`Robot button ${msg.id} state ${msg.state}`));
+
+addEventListener('resize', () => { drawLidar(); drawAttitude(); drawTrail(); });
+drawLidar(); drawAttitude();
+</script>
+</body>
+</html>

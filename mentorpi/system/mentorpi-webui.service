@@ -1,0 +1,18 @@
+[Unit]
+Description=MentorPi web control UI
+Requires=mentorpi-container.service
+Wants=mentorpi-bringup.service
+After=mentorpi-bringup.service
+
+[Service]
+Type=simple
+User=@USER@
+# Wait for rosbridge so the bringup's stop-all step has already run
+ExecStartPre=/bin/bash -c 'for i in $(seq 120); do ss -ltn | grep -q ":9090 " && exit 0; sleep 1; done; echo "rosbridge not up" >&2; exit 1'
+ExecStart=@DIR@/web_ui/start_web_ui.sh --foreground
+ExecStop=/usr/bin/docker exec MentorPi pkill -f web_ui_server.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

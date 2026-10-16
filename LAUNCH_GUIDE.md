@@ -1,13 +1,16 @@
 # MentorPi M1 — Launch Guide
 
 **Platform:** Raspberry Pi 5 · Ubuntu 25.04 · Ackermann steering  
-**Hardware:** MS200 LiDAR (`/dev/ttyUSB0`) · STM32 controller (`/dev/ttyACM0`) · Orbbec Astra depth camera
+**Hardware:** MS200 LiDAR (`/dev/ldlidar` → ttyUSB0) · STM32 controller (`/dev/rrc` → ttyACM0) · Angstrong HP60C depth camera (`ascamera`)
 
 ---
 
 ## Option 1 — Docker (Factory Image)
 
 The factory image is stored as the `mentorpi:factory` Docker image. It runs the original Hiwonder Ubuntu 22.04 ROS2 Humble environment.
+
+> With [`mentorpi/install.sh`](mentorpi/README.md) the container, bringup and web UI start at boot via systemd,
+> so the manual commands below are only needed for debugging. Health check: `~/mentorpi/status.sh`.
 
 ### Prerequisites
 
@@ -117,7 +120,7 @@ This starts:
 - `startup_check` — verifies hardware is reachable
 - `controller` — motor driver, odometry, EKF (via `ttyACM0`)
 - `lidar` — MS200 LiDAR (via `oradar_lidar` on `ttyUSB0`)
-- `depth_camera` — Orbbec Astra (`ascamera`) — *skipped, not yet built*
+- `depth_camera` — Angstrong HP60C (`ascamera`) — *skipped, not yet built*
 - `rosbridge_server` — WebSocket bridge on port 9090
 - `web_video_server` — HTTP video stream — *skipped, FFmpeg compat issue*
 - `start_app` — application node

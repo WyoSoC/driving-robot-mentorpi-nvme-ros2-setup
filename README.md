@@ -12,9 +12,11 @@ This repo documents two ways to run it on a modern NVMe-boot system:
 | **Base OS** | Ubuntu 25.04 (host) | Ubuntu 25.04 (host) |
 | **ROS2** | Humble (inside container, Ubuntu 22.04) | Humble (conda / RoboStack) |
 | **Fidelity** | Exact factory image | Built from source |
-| **Setup effort** | Pull image + run script | Build workspace (~20 min) |
+| **Setup effort** | `install.sh` (one command) | Build workspace (~20 min) |
 | **Depth camera** | Works | Not yet (PCL/Qt6 issue) |
 | **Video server** | Works | Not yet (FFmpeg 4→7 port needed) |
+| **Web control UI** | Yes (live video, sensors, driving) | No |
+| **Status** | **Supported; running on the cars** | Does not run bringup yet (see [mentorpi/README.md](mentorpi/README.md#native-conda-build-not-in-use)) |
 
 ---
 
@@ -24,67 +26,37 @@ This repo documents two ways to run it on a modern NVMe-boot system:
 |---|---|
 | **SBC** | Raspberry Pi 5 |
 | **Chassis** | Ackermann steering (`MACHINE_TYPE=MentorPi_Acker`) |
-| **Motor controller** | STM32 via `ros_robot_controller` on `/dev/ttyACM0` |
-| **LiDAR** | Hiwonder MS200 (`oradar_lidar` driver) on `/dev/ttyUSB0` |
-| **Depth camera** | Orbbec Astra (`ascamera`) |
+| **Motor controller** | STM32 via `ros_robot_controller`, USB `1a86:55d4` → `/dev/rrc` |
+| **LiDAR** | Hiwonder MS200 (`oradar_lidar` driver), USB `1a86:7523` → `/dev/ldlidar` |
+| **Depth camera** | Angstrong HP60C (`ascamera`), USB `3482:6723` |
 | **OS** | Ubuntu 25.04 Plucky Puffin, booting from NVMe SSD |
-
----
-
-## Prerequisites
-
-```bash
-# Add your user to the serial port groups
-sudo usermod -aG dialout,tty $USER
-# Log out and back in, or: newgrp dialout
-
-# Install udev rules for hardware devices
-bash udev/install_udev_rules.sh
-```
 
 ---
 
 ## Option 1 — Docker (Factory Image)
 
-### Pull the factory image
+Everything for this option is in [`mentorpi/`](mentorpi/): three systemd services that start
+the container, the ROS 2 bringup and a browser control UI at boot, udev rules, per-car
+settings, a health check, and an installer for setting up more cars.
+**See [mentorpi/README.md](mentorpi/README.md) for the full guide.**
+
+Quick start on a car (Docker installed, `mentorpi:factory` image present or available as
+a transfer bundle from another car):
 
 ```bash
-docker pull ghcr.io/wyoarcc/mentorpi:factory
-docker tag  ghcr.io/wyoarcc/mentorpi:factory mentorpi:factory
+git clone https://github.com/WyoSoC/driving-robot-mentorpi-nvme-ros2-setup.git
+ln -s ~/driving-robot-mentorpi-nvme-ros2-setup/mentorpi ~/mentorpi
+~/mentorpi/install.sh [--image /path/to/mentorpi-factory.tar.zst]
+sudo systemctl start mentorpi-webui
+~/mentorpi/status.sh                 # then open http://<car-ip>:8000
 ```
 
-### Install scripts
+Each car gets its name and a unique `ROS_DOMAIN_ID` from its hostname (`jpi2` → 2).
 
-```bash
-mkdir -p ~/mentorpi
-cp docker/run_container.sh  ~/mentorpi/
-cp docker/start_node.sh     ~/mentorpi/
-chmod +x ~/mentorpi/*.sh
-```
+The factory image (~6 GB compressed) is not on a public registry. Copy it from a working
+car with `mentorpi/make_bundle.sh` (see "Transfer to another identical car" in the guide).
 
-### (Optional) Install systemd auto-start
-
-```bash
-# Edit the service file if your username is not 'gojian'
-sed -i "s/gojian/$USER/g" docker/mentorpi-container.service
-
-sudo cp docker/mentorpi-container.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable mentorpi-container.service
-```
-
-### Run
-
-```bash
-# Start container + launch ROS2
-~/mentorpi/run_container.sh
-~/mentorpi/start_node.sh
-
-# Or if systemd service is installed:
-sudo systemctl start mentorpi-container.service
-```
-
-See [LAUNCH_GUIDE.md](LAUNCH_GUIDE.md) for all available commands.
+See [LAUNCH_GUIDE.md](LAUNCH_GUIDE.md) for manual launch commands.
 
 ---
 
@@ -99,7 +71,7 @@ sudo apt-get install -y \
   libmetis-dev
 
 # libg2o_incremental is not in the Ubuntu 25.04 package — copy from Docker image:
-sudo docker run --rm ghcr.io/wyoarcc/mentorpi:factory \
+sudo docker run --rm mentorpi:factory \
   cat /opt/ros/humble/lib/aarch64-linux-gnu/libg2o_incremental.so \
   | sudo tee /usr/lib/aarch64-linux-gnu/libg2o_incremental.so > /dev/null
 ```
@@ -151,12 +123,12 @@ Some packages are not available via conda or apt. Copy them from the factory ima
 CONDA=~/Programs/Conda/envs/ros2_humble
 
 # filters (laser_filters dependency)
-docker run --rm ghcr.io/wyoarcc/mentorpi:factory tar -C /opt/ros/humble -c \
+docker run --rm mentorpi:factory tar -C /opt/ros/humble -c \
   lib/libfilters.so lib/liblaser_scan_filters.so \
   include/filters share/filters | tar -C $CONDA -x
 
 # apriltag C library (apriltag_ros dependency)
-docker run --rm ghcr.io/wyoarcc/mentorpi:factory tar -C /opt/ros/humble -c \
+docker run --rm mentorpi:factory tar -C /opt/ros/humble -c \
   lib/libapriltag.so lib/libapriltag.so.3 lib/libapriltag.so.3.2.0 \
   include/apriltag share/apriltag | tar -C $CONDA -x
 ```
@@ -210,10 +182,12 @@ See [LAUNCH_GUIDE.md](LAUNCH_GUIDE.md) for all launch options including joystick
 .
 ├── README.md
 ├── LAUNCH_GUIDE.md        # Full launch reference for both options
-├── docker/
-│   ├── run_container.sh            # Start/restart the factory Docker container
-│   ├── start_node.sh               # Launch ROS2 bringup inside container
-│   └── mentorpi-container.service  # systemd unit for auto-start on boot
+├── mentorpi/               # Option 1: Docker stack, web UI, installer (see its README)
+│   ├── install.sh / make_bundle.sh / status.sh
+│   ├── run_container.sh / start_node.sh
+│   ├── car.env.example / calibration.defaults/   # per-car settings templates
+│   ├── system/            # udev rules + systemd unit templates
+│   └── web_ui/            # browser control UI
 ├── native/
 │   ├── setup_env.sh        # Activate conda env + source workspace
 │   ├── build_workspace.sh  # colcon build with all required cmake args
@@ -226,13 +200,10 @@ See [LAUNCH_GUIDE.md](LAUNCH_GUIDE.md) for all launch options including joystick
 │   ├── 0003-ldlidar-pthread-include.patch
 │   ├── 0004-oradar-cmake-old-policies.patch
 │   └── 0005-oradar-cmake-cmp0026-location.patch
-└── udev/
-    ├── 99-ttyACM0.rules             # STM32 motor controller serial port
-    ├── lidar.rules                  # LiDAR USB-serial device
-    ├── 99-usb-cam.rules             # USB camera
-    ├── 99-obsensor-libusb.rules     # Orbbec depth camera
-    └── install_udev_rules.sh        # Helper to install all rules
 ```
+
+The native option needs the udev rules from `mentorpi/system/` as well
+(`sudo install -m 644 mentorpi/system/*.rules /etc/udev/rules.d/`).
 
 ---
 

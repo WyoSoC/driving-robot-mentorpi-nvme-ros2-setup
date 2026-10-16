@@ -1,0 +1,15 @@
+[Unit]
+Description=MentorPi Docker container
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=@USER@
+ExecStart=@DIR@/run_container.sh
+ExecStop=/usr/bin/docker rm -f MentorPi
+
+[Install]
+WantedBy=multi-user.target
