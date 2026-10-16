@@ -7,6 +7,7 @@
 #                  STEER_SERVO_PORT (patched into ros_robot_controller, system/patch_controller.py)
 #   calibration/   IMU + odometry calibration, bind-mounted over the image defaults
 #   web_ui/        web control UI, bind-mounted at /home/ubuntu/web_ui
+#   maps/          SLAM maps saved from the web UI (per car), bind-mounted at /home/ubuntu/maps
 
 set -e
 
@@ -32,7 +33,7 @@ if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
     docker rm -f "${CONTAINER_NAME}" >/dev/null
 fi
 
-mkdir -p "$HOME/docker/tmp"
+mkdir -p "$HOME/docker/tmp" "$DIR/maps"
 UID_NUM=$(id -u)
 
 echo "Starting ${CONTAINER_NAME} (${CAR_NAME}, ROS_DOMAIN_ID=${ROS_DOMAIN_ID})..."
@@ -50,6 +51,7 @@ docker run -d \
     -v /var/lib/dbus:/var/lib/dbus \
     -v "$HOME/docker/tmp:/home/ubuntu/shared" \
     -v "$DIR/web_ui:/home/ubuntu/web_ui" \
+    -v "$DIR/maps:/home/ubuntu/maps" \
     -v "$DIR/calibration/imu_calib.yaml:/home/ubuntu/ros2_ws/src/calibration/config/imu_calib.yaml" \
     -v "$DIR/calibration/calibrate_params.yaml:/home/ubuntu/ros2_ws/src/driver/controller/config/calibrate_params.yaml" \
     -v "$DIR/calibration/imu_calib.yaml:$WS_SHARE/calibration/share/calibration/config/imu_calib.yaml" \
@@ -62,6 +64,9 @@ docker exec "${CONTAINER_NAME}" sed -i "s/^export ROS_DOMAIN_ID=.*/export ROS_DO
 
 # Which RRC Lite PWM port the steering servo is plugged into (our standard: 4; factory: 3).
 docker exec -i -u ubuntu "${CONTAINER_NAME}" python3 - "${STEER_SERVO_PORT:-4}" < "$DIR/system/patch_controller.py"
+
+# Odometry correction factors (calibration/calibrate_params.yaml) on the velocities the EKF uses.
+docker exec -i -u ubuntu "${CONTAINER_NAME}" python3 - < "$DIR/system/patch_odom.py"
 
 # rosbridge leak when a browser disconnects mid-setup (see system/patch_rosbridge.py).
 docker exec -i "${CONTAINER_NAME}" python3 - < "$DIR/system/patch_rosbridge.py"

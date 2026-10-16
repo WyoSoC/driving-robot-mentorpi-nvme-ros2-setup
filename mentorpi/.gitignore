@@ -1,6 +1,7 @@
 # Per-car files: created by install.sh, never committed
 car.env
 calibration/
+maps/
 # Hiwonder factory leftovers that may exist in an extracted kit
 tool/
 mentorpi/

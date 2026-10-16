@@ -18,7 +18,7 @@ mkdir -p "$OUT"
 
 echo "==> Kit"
 tar -C "$(dirname "$DIR")" -czf "$OUT/mentorpi-kit.tar.gz" \
-    --exclude=mentorpi/car.env --exclude=mentorpi/calibration --exclude=mentorpi/.git \
+    --exclude=mentorpi/car.env --exclude=mentorpi/calibration --exclude=mentorpi/maps --exclude=mentorpi/.git \
     --exclude='__pycache__' --exclude=mentorpi/tool/Log \
     "$(basename "$DIR")"
 echo "    $OUT/mentorpi-kit.tar.gz ($(du -h "$OUT/mentorpi-kit.tar.gz" | cut -f1))"

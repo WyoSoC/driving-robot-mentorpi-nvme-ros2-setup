@@ -54,12 +54,17 @@
   main { display: grid; gap: 16px; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); align-items: start; }
   .col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
   .pair { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-  #systemPanel { grid-column: 1 / -1; }
+  #systemPanel, #mapPanel { grid-column: 1 / -1; }
+  #slamMap { aspect-ratio: 16 / 9; background: #cdcdcd; }
+  .slam-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+  .slam-bar input { background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 8px; padding: 6px 8px; width: 12em; max-width: 100%; }
+  .slam-info { font-size: 12px; color: var(--muted); margin-top: 8px; }
   @media (max-width: 900px) {
     main { display: flex; flex-direction: column; align-items: stretch; }
     .col, .pair { display: contents; }
     #videoPanel { order: 1; } #drivePanel { order: 2; } #lidarPanel { order: 3; }
-    #imuPanel { order: 4; } #odomPanel { order: 5; } #systemPanel { order: 6; }
+    #imuPanel { order: 4; } #odomPanel { order: 5; } #mapPanel { order: 6; } #systemPanel { order: 7; }
   }
   .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
     padding: 14px; min-width: 0; }
@@ -235,6 +240,20 @@
     </div>
   </section>
   </div>
+
+  <section class="panel" id="mapPanel">
+    <h2>Map (SLAM) <span class="right pill" id="slamState">off</span></h2>
+    <div class="slam-bar">
+      <button class="btn" id="slamStart">Start mapping</button>
+      <button class="btn" id="slamStop">Stop</button>
+      <input id="slamName" placeholder="map name" maxlength="40">
+      <button class="btn" id="slamSave">Save map</button>
+      <span class="slam-info" id="slamMsg"></span>
+    </div>
+    <canvas id="slamMap"></canvas>
+    <div class="slam-info" id="slamInfo">Lidar mapping with slam_toolbox. Drive slowly (≤ 0.3 m/s) and come back past
+      your start point now and then so the map can close loops. Saved maps stay on this car.</div>
+  </section>
 
   <section class="panel" id="systemPanel">
     <h2>System</h2>
@@ -696,7 +715,76 @@ ros.subscribe('/client_count', 'std_msgs/msg/Int32', msg => touch('clients', Str
 ros.subscribe('/ros_robot_controller/button', 'ros_robot_controller_msgs/msg/ButtonState',
   msg => log(`Robot button ${msg.id} state ${msg.state}`));
 
-addEventListener('resize', () => { drawLidar(); drawAttitude(); drawTrail(); });
+// ---------- Map (SLAM) ----------
+// The server renders /map to a PNG and tracks the pose in the map frame (slam_manager.py).
+const slam = { st: null, img: null, imgVersion: 0, path: [] };
+async function slamApi(action, query = '') {
+  const r = await fetch(`/api/slam/${action}${query}`, { method: 'POST' });
+  const j = await r.json().catch(() => ({ message: r.statusText }));
+  $('slamMsg').textContent = j.message || '';
+  log(`Map: ${j.message}`);
+  slamPoll();
+}
+$('slamStart').onclick = () => slamApi('start');
+$('slamStop').onclick = () => slamApi('stop');
+$('slamSave').onclick = () => {
+  const name = $('slamName').value.trim() || `map_${new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '')}`;
+  $('slamName').value = name;
+  $('slamMsg').textContent = 'saving…';
+  slamApi('save', `?name=${encodeURIComponent(name)}`);
+};
+async function slamPoll() {
+  let st;
+  try { st = await (await fetch(`/api/slam?since=${slam.path.length}`)).json(); } catch { return; }
+  if (st.path_len < slam.path.length) slam.path = [];                  // restarted
+  slam.path.push(...st.path.slice(0, Math.max(0, st.path_len - slam.path.length)));
+  slam.st = st;
+  $('slamState').textContent = st.running ? `mapping ${Math.floor(st.uptime_s / 60)}:${String(st.uptime_s % 60).padStart(2, '0')}` : 'off';
+  $('slamState').style.color = st.running ? 'var(--ok)' : '';
+  $('slamStart').disabled = st.running; $('slamStop').disabled = !st.running; $('slamSave').disabled = !st.running;
+  if (st.map && st.map.version !== slam.imgVersion) {
+    const img = new Image();
+    img.onload = () => { slam.img = img; slam.imgVersion = st.map.version; drawSlam(); };
+    img.src = `/api/slam/map.png?v=${st.map.version}`;
+  }
+  const m = st.map;
+  $('slamInfo').textContent = m
+    ? `${(m.width * m.resolution).toFixed(1)} × ${(m.height * m.resolution).toFixed(1)} m · ${m.resolution * 100} cm/px` +
+      (st.pose ? ` · car at (${st.pose[0].toFixed(2)}, ${st.pose[1].toFixed(2)}) m, ${deg(st.pose[2]).toFixed(0)}°` : '') +
+      (st.maps.length ? ` · saved: ${st.maps.join(', ')}` : '')
+    : (st.running ? 'waiting for the first map…' : `Not mapping.${st.maps.length ? ' Saved maps: ' + st.maps.join(', ') : ''}`);
+  drawSlam();
+}
+function drawSlam() {
+  const { ctx, w, h } = prepCanvas($('slamMap'));
+  const st = slam.st, m = st && st.map, img = slam.img;
+  if (!m || !img) {
+    ctx.fillStyle = '#5b6573'; ctx.font = '13px system-ui';
+    ctx.fillText(st && st.running ? 'Building map…' : 'Press "Start mapping" to build a map with the lidar', 12, 22);
+    return;
+  }
+  const s = Math.min(w / img.width, h / img.height);                  // map pixels -> canvas
+  const ox = (w - img.width * s) / 2, oy = (h - img.height * s) / 2;
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(img, ox, oy, img.width * s, img.height * s);
+  const toC = (x, y) => [ox + (x - m.origin[0]) / m.resolution * s, oy + (img.height - (y - m.origin[1]) / m.resolution) * s];
+  if (slam.path.length > 1) {
+    ctx.strokeStyle = '#3fb6ff'; ctx.lineWidth = 2; ctx.beginPath();
+    slam.path.forEach((p, i) => { const [cx, cy] = toC(p[0], p[1]); i ? ctx.lineTo(cx, cy) : ctx.moveTo(cx, cy); });
+    ctx.stroke();
+  }
+  if (st.pose) {
+    const [cx, cy] = toC(st.pose[0], st.pose[1]), a = -st.pose[2], r = 9;
+    ctx.fillStyle = '#f85149'; ctx.beginPath();
+    ctx.moveTo(cx + r * Math.cos(a), cy + r * Math.sin(a));
+    ctx.lineTo(cx + r * Math.cos(a + 2.5), cy + r * Math.sin(a + 2.5));
+    ctx.lineTo(cx + r * Math.cos(a - 2.5), cy + r * Math.sin(a - 2.5));
+    ctx.closePath(); ctx.fill();
+  }
+}
+setInterval(slamPoll, 1000); slamPoll();
+
+addEventListener('resize', () => { drawLidar(); drawAttitude(); drawTrail(); drawSlam(); });
 drawLidar(); drawAttitude();
 </script>
 </body>

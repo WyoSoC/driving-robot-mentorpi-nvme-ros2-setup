@@ -9,6 +9,8 @@
   16-bit depth image as MJPEG. Only runs while someone is watching.
 - Publishes /web/battery_status (std_msgs/String, JSON, 1 Hz): charge %, charging /
   in use / steady, time to empty or full. See battery_estimator.py.
+- SLAM (slam_manager.py): GET /api/slam (status, pose, path), GET /api/slam/map.png,
+  POST /api/slam/start | /api/slam/stop | /api/slam/save?name=NAME
 
 /app/cmd_vel contract (odom_publisher_node, MentorPi_Acker):
   linear.x  = speed in m/s
@@ -18,6 +20,7 @@ import functools
 import http.server
 import json
 import math
+import urllib.parse
 import os
 import threading
 import time
@@ -34,6 +37,7 @@ from sensor_msgs.msg import Image
 from std_msgs.msg import String, UInt16
 
 from battery_estimator import BatteryEstimator
+from slam_manager import SlamManager
 
 HTTP_PORT = int(os.environ.get('WEB_UI_PORT', 8000))
 WEB_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -75,6 +79,8 @@ class WebBridge(Node):
         self.create_subscription(UInt16, BATTERY_TOPIC, self.on_battery, 10)
         self.create_subscription(Odometry, '/odom', self.on_odom, 10)
         self.create_timer(1.0, self.publish_battery)
+
+        self.slam = SlamManager(self)
 
     def on_cmd(self, msg):
         out = Twist()
@@ -124,8 +130,43 @@ class WebBridge(Node):
 
 
 class QuietHandler(http.server.SimpleHTTPRequestHandler):
+    node = None   # set in main()
+
     def log_message(self, *args):
         pass
+
+    def _send(self, code, body, ctype='application/json'):
+        if isinstance(body, (dict, list)):
+            body = json.dumps(body).encode()
+        self.send_response(code)
+        self.send_header('Content-Type', ctype)
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        url = urllib.parse.urlparse(self.path)
+        slam = self.node.slam
+        if url.path == '/api/slam':
+            q = urllib.parse.parse_qs(url.query)
+            return self._send(200, slam.status(int(q.get('since', ['0'])[0] or 0)))
+        if url.path == '/api/slam/map.png':
+            png = slam.png
+            return self._send(200, png, 'image/png') if png else self._send(404, {'error': 'no map yet'})
+        return super().do_GET()
+
+    def do_POST(self):
+        url = urllib.parse.urlparse(self.path)
+        slam = self.node.slam
+        if url.path == '/api/slam/start':
+            return self._send(200, {'ok': True, 'message': slam.start()})
+        if url.path == '/api/slam/stop':
+            return self._send(200, {'ok': True, 'message': slam.stop()})
+        if url.path == '/api/slam/save':
+            name = urllib.parse.parse_qs(url.query).get('name', [''])[0]
+            ok, msg = slam.save(name)
+            return self._send(200 if ok else 400, {'ok': ok, 'message': msg})
+        return self._send(404, {'error': 'not found'})
 
     def end_headers(self):
         self.send_header('Cache-Control', 'no-store')
@@ -141,6 +182,7 @@ def serve_http():
 def main():
     rclpy.init()
     node = WebBridge()
+    QuietHandler.node = node
     threading.Thread(target=serve_http, daemon=True).start()
     node.get_logger().info(f'Web UI on http://0.0.0.0:{HTTP_PORT}')
     try:
@@ -152,6 +194,7 @@ def main():
             node.stop()  # fails harmlessly if ROS already shut down (e.g. SIGTERM)
         except Exception:
             pass
+        node.slam.shutdown()
         node.destroy_node()
         rclpy.try_shutdown()
 
