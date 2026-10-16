@@ -125,8 +125,8 @@ its `ROS_DOMAIN_ID` is the number in the hostname (`install.sh` does this by def
 
 | Car (hostname) | ROS_DOMAIN_ID | Notes |
 |---|---|---|
-| jpi1 | 1 | first car; source of the transfer bundle; steering port 3 (factory, not yet verified) |
-| jpi2 | 2 | installed 2026-10-16; extra CH340 voice module (ignored); steering servo on port 4 |
+| jpi1 | 1 | first car; source of the transfer bundle; steering port 4 (standard; to be verified) |
+| jpi2 | 2 | installed 2026-10-16; extra CH340 voice module (ignored); steering port 4 (verified) |
 
 To change it later: edit `car.env`, then `sudo systemctl restart mentorpi-container && sudo systemctl start mentorpi-webui`.
 If you use ROS 2 tools from a laptop, set the same `ROS_DOMAIN_ID` there.
@@ -180,10 +180,10 @@ per-axis model computed from the same poses. (If you run `do_calib` by hand, its
 ### Steering servo port: `STEER_SERVO_PORT` in `car.env`
 
 The software drives the steering servo as PWM servo 3, but which RRC Lite port it is plugged
-into differs between cars. Hiwonder's docs put it on J5 (port 3); **our standard is port 4**
-(car 2 came wired that way). `run_container.sh` patches `ros_robot_controller` at every start
+can differ. Hiwonder's docs put it on J5 (port 3); **our standard, and the default for all
+cars, is port 4** (how car 2 came wired). `run_container.sh` patches `ros_robot_controller` at every start
 (`system/patch_controller.py`) to send servo 3 to `STEER_SERVO_PORT` (swapping 3 and 4).
-Unset means 3 (factory). Check with the front wheels off the ground:
+Unset means 4. Check with the front wheels off the ground:
 
 ```bash
 ~/mentorpi/tools/steer_test.sh         # full left 2 s, full right 2 s, centre
