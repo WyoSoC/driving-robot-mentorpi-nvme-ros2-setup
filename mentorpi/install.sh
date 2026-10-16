@@ -95,6 +95,11 @@ sudo udevadm trigger --action=add --subsystem-match=usb
 sudo udevadm settle
 ok "installed"
 
+step "Keep ROS 2 shared memory across logouts (logind RemoveIPC=no)"
+sudo install -D -m 644 "$DIR/system/90-mentorpi-keep-ipc.conf" /etc/systemd/logind.conf.d/90-mentorpi-keep-ipc.conf
+sudo systemctl reload systemd-logind 2>/dev/null || warn "reload systemd-logind failed; takes effect after reboot"
+ok "$(systemd-analyze cat-config systemd/logind.conf 2>/dev/null | grep -E '^RemoveIPC=' | tail -1)"
+
 step "Hardware check"
 check() {  # vid:pid description [device]
     if lsusb -d "$1" >/dev/null 2>&1; then ok "$2 ($1)${3:+ -> $3}"; else warn "$2 ($1) not found on USB"; fi

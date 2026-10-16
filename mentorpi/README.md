@@ -30,7 +30,12 @@ Per-car files (`car.env`, `calibration/`) are created by `install.sh` and are no
    until the vendor rules were installed on the host (`system/56-angstrong-camera.rules`).
 3. **Boot service**: the old `mentorpi-container.service` started bringup before the
    container existed and failed every boot. It's replaced by three ordered services.
-4. **Per-car settings**: `ROS_DOMAIN_ID` and calibration are now outside the image so
+4. **Shared memory removed at logout**: the container shares the host `/dev/shm`, and its ROS 2
+   nodes run as uid 1000 like the host user. Ubuntu's default `RemoveIPC=yes` deleted that memory
+   whenever the user's last login session closed (e.g. SSH logout), after which no new subscriber
+   (status.sh, web UI, video) got data. `install.sh` sets `RemoveIPC=no`
+   (`system/90-mentorpi-keep-ipc.conf`).
+5. **Per-car settings**: `ROS_DOMAIN_ID` and calibration are now outside the image so
    several cars can share a network.
 
 ---
@@ -218,6 +223,7 @@ Then open `http://<new-car-ip>:8000`.
 | Web UI loads but "Disconnected" | rosbridge (9090) not up: `journalctl -u mentorpi-bringup` |
 | Video "unavailable" | web_video_server (8080) not up, or camera not streaming |
 | Car stops by itself while driving from web | Watchdog: browser commands stopped >0.5 s (weak Wi-Fi). Server log: `journalctl -u mentorpi-webui` |
+| Nodes all listed but `status.sh` shows NO DATA, web UI shows no video/sensors (often after an SSH logout) | `/dev/shm` was cleared by logind (`ls /dev/shm \| wc -l` is ~0). Re-run `install.sh` (sets `RemoveIPC=no`), then `sudo systemctl restart mentorpi-container && sudo systemctl start mentorpi-webui` |
 | Two cars react to the same command | Same `ROS_DOMAIN_ID`; give each car its own |
 | `install.sh` stops after adding docker group | Expected the first time; log out/in, run again |
 
