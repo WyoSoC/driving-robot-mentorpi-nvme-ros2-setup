@@ -63,5 +63,8 @@ docker exec "${CONTAINER_NAME}" sed -i "s/^export ROS_DOMAIN_ID=.*/export ROS_DO
 # Which RRC Lite PWM port the steering servo is plugged into (our standard: 4; factory: 3).
 docker exec -i -u ubuntu "${CONTAINER_NAME}" python3 - "${STEER_SERVO_PORT:-4}" < "$DIR/system/patch_controller.py"
 
+# rosbridge leak when a browser disconnects mid-setup (see system/patch_rosbridge.py).
+docker exec -i "${CONTAINER_NAME}" python3 - < "$DIR/system/patch_rosbridge.py"
+
 echo "${CONTAINER_NAME} container started."
 echo "To launch ROS2: $DIR/start_node.sh"

@@ -35,7 +35,12 @@ Per-car files (`car.env`, `calibration/`) are created by `install.sh` and are no
    whenever the user's last login session closed (e.g. SSH logout), after which no new subscriber
    (status.sh, web UI, video) got data. `install.sh` sets `RemoveIPC=no`
    (`system/90-mentorpi-keep-ipc.conf`).
-5. **Per-car settings**: `ROS_DOMAIN_ID` and calibration are now outside the image so
+5. **rosbridge memory leak**: a browser that disconnects while its subscriptions are being set up
+   (closed or reloaded within a second or two) left rosbridge sending to the dead connection; on car 1
+   it grew to 6.6 GB and was killed, disconnecting the web UI. Patched at container start
+   (`system/patch_rosbridge.py`), plus a once-a-minute watchdog (`mentorpi-watchdog.timer`) that
+   restarts the robot software if rosbridge is gone or above 1 GB.
+6. **Per-car settings**: `ROS_DOMAIN_ID` and calibration are now outside the image so
    several cars can share a network.
 
 ---
@@ -276,6 +281,7 @@ Then open `http://<new-car-ip>:8000`.
 | Car stops by itself while driving from web | Watchdog: browser commands stopped >0.5 s (weak Wi-Fi). Server log: `journalctl -u mentorpi-webui` |
 | Nodes all listed but `status.sh` shows NO DATA, web UI shows no video/sensors (often after an SSH logout) | `/dev/shm` was cleared by logind (`ls /dev/shm \| wc -l` is ~0). Re-run `install.sh` (sets `RemoveIPC=no`), then `sudo systemctl restart mentorpi-container && sudo systemctl start mentorpi-webui` |
 | Steering doesn't move at all (drive motors work) | Servo on another port: see [Steering servo port](#steering-servo-port-steer_servo_port-in-carenv) |
+| Web UI "Disconnected", port 9090 not listening; kernel log shows `Out of memory: Killed process ... (python3)` | rosbridge leaked memory after a browser dropped mid-connect (fixed by `system/patch_rosbridge.py`). `mentorpi-watchdog.timer` restarts the robot software automatically if it happens again: `journalctl -u mentorpi-watchdog` |
 | Two cars react to the same command | Same `ROS_DOMAIN_ID`; give each car its own |
 | `install.sh` stops after adding docker group | Expected the first time; log out/in, run again |
 

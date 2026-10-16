@@ -111,13 +111,15 @@ check 3482:6723 "Angstrong HP60C depth camera"
 
 step "systemd services"
 mkdir -p "$HOME/docker/tmp"
-for unit in mentorpi-container mentorpi-bringup mentorpi-webui; do
-    sed -e "s|@USER@|$USER|g" -e "s|@DIR@|$DIR|g" "$DIR/system/$unit.service" \
-        | sudo tee "/etc/systemd/system/$unit.service" >/dev/null
+for unit in mentorpi-container.service mentorpi-bringup.service mentorpi-webui.service \
+            mentorpi-watchdog.service mentorpi-watchdog.timer; do
+    sed -e "s|@USER@|$USER|g" -e "s|@DIR@|$DIR|g" "$DIR/system/$unit" \
+        | sudo tee "/etc/systemd/system/$unit" >/dev/null
 done
 sudo systemctl daemon-reload
 if [ "$ENABLE" = 1 ]; then
     sudo systemctl enable mentorpi-container mentorpi-bringup mentorpi-webui >/dev/null 2>&1
+    sudo systemctl enable --now mentorpi-watchdog.timer >/dev/null 2>&1
     ok "installed and enabled at boot"
 else
     ok "installed (not enabled)"

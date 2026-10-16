@@ -1,0 +1,7 @@
+[Unit]
+Description=MentorPi rosbridge watchdog (restarts robot software if rosbridge is gone or leaking)
+After=mentorpi-bringup.service
+
+[Service]
+Type=oneshot
+ExecStart=@DIR@/system/rosbridge_watchdog.sh
