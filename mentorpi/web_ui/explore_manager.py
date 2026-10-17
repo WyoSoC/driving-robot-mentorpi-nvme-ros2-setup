@@ -139,6 +139,7 @@ class Explorer:
         self.blacklist, self.visited = [], []
         self.fails = 0
         self.empty_checks = 0
+        self.quick_retries = 0
         self.started_at = None
         self.saved_as = None
         self.own_cancel = False
@@ -168,7 +169,8 @@ class Explorer:
             self.home = None
             self.goal, self.frontiers, self.cells = None, [], []
             self.blacklist, self.visited = [], []
-            self.fails = self.empty_checks = 0
+            self.fails = self.empty_checks = self.quick_retries = 0
+            self.goal_sent_at = None
             self.saved_as = None
             self.started_at = time.monotonic()
             self.state = 'starting'
@@ -267,6 +269,7 @@ class Explorer:
                 if self.state == 'returning':
                     return self._finish()
                 self.fails = 0
+                self.quick_retries = 0
                 self.visited.append(self.goal[:2])
                 self.goal = None
             else:
@@ -311,6 +314,13 @@ class Explorer:
         self.goal, self.goal_sent_at, self.own_cancel = list(goal), time.monotonic(), False
 
     def _failed(self, why):
+        quick = self.goal_sent_at is not None and time.monotonic() - self.goal_sent_at < 3.0
+        if self.goal is not None and quick and self.quick_retries < 2:
+            # failed at once: usually navigation had no map yet. Try again, don't blacklist.
+            self.quick_retries += 1
+            self.log.info(f'exploration goal {self.goal} failed at once ({why}): retrying')
+            self.goal = None
+            return
         if self.goal is not None:
             self.blacklist.append(self.goal[:2])
             self.log.info(f'exploration goal {self.goal} failed: {why}')

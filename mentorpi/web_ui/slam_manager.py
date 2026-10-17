@@ -115,6 +115,9 @@ class SlamManager:
             return
         self.pending_map = None
         self.last_render = time.monotonic()
+        self._render(msg)
+
+    def _render(self, msg):
         w, h = msg.info.width, msg.info.height
         grid = np.array(msg.data, dtype=np.int8).reshape(h, w)   # -1 unknown, 0 free .. 100 occupied
         img = np.full((h, w), 205, np.uint8)                      # unknown: grey
@@ -162,7 +165,7 @@ class SlamManager:
         return future.result()
 
     def save_rendered(self, path):
-        """After Stop: save the map still on screen (PNG + nav2 map yaml; no pose graph)."""
+        """Save the rendered map (PNG + nav2 map yaml; no pose graph)."""
         png, meta = self.png, self.meta
         if not png or not meta:
             return False, 'no map to save: start mapping first'
@@ -181,18 +184,21 @@ class SlamManager:
         path = os.path.join(MAPS_DIR, name)
         if not self.running():
             return self.save_rendered(path)
+        # While mapping: image + yaml from the latest map, written here (slam_toolbox's save_map runs
+        # nav2's map_saver_cli, which failed with 255 here), plus slam_toolbox's pose graph.
+        if self.grid is not None:
+            self._render(self.grid)
+        ok, msg = self.save_rendered(path)
+        if not ok:
+            return ok, msg
         try:
-            req = SaveMap.Request()
-            req.name = String(data=path)
-            r1 = self._call(self.save_cli, req)
             req2 = SerializePoseGraph.Request()
             req2.filename = path
-            r2 = self._call(self.serialize_cli, req2)
-        except Exception as exc:
-            return False, f'save failed: {exc}'
-        ok = r1.result == 0 and r2.result == 0 and os.path.exists(path + '.yaml')
-        self.message = f'saved map "{name}"' if ok else f'save problem (map={r1.result}, graph={r2.result})'
-        return ok, self.message
+            graph_ok = self._call(self.serialize_cli, req2).result == 0
+        except Exception:
+            graph_ok = False
+        self.message = f'saved map "{name}"' + ('' if graph_ok else ' (image + yaml; pose graph not saved)')
+        return True, self.message
 
     # ---- status for the web page ---------------------------------------------
     def status(self, since_path=0):

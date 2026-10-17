@@ -24,7 +24,8 @@ if [ -z "${PEERS+x}" ] && [ -f "$DIR/../fleet.env" ]; then
         PEERS+="$h:$PORT "
     done
 fi
-ENVS=(-e WEB_UI_PORT="$PORT" -e CAR_NAME="$CAR" -e PEERS="${PEERS:-}")
+TZ_HOST=$(timedatectl show -p Timezone --value 2>/dev/null || true)   # map names use local time
+ENVS=(-e WEB_UI_PORT="$PORT" -e CAR_NAME="$CAR" -e PEERS="${PEERS:-}" -e TZ="${TZ_HOST:-UTC}")
 RUN="source ~/.zshrc >/dev/null 2>&1; exec python3 web_ui_server.py"
 
 docker exec "$CONTAINER" pkill -f web_ui_server.py 2>/dev/null || true
