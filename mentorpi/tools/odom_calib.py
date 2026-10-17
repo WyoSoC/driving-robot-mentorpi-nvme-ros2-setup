@@ -50,6 +50,10 @@ def yaw_of(q):
     return math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
 
 
+class Runaway(Exception):
+    pass
+
+
 class Calib:
     def __init__(self):
         rclpy.init()
@@ -205,6 +209,13 @@ class Calib:
             if guard is not None and guard < (STOP_FRONT if direction > 0 else 0.4):
                 self.stop()
                 sys.exit(f'stopped: obstacle {guard:.2f} m {"ahead" if direction > 0 else "behind"}')
+            if len(samples) >= 3 and samples[-1][0] > samples[-3][0]:   # runaway: much faster than sent
+                fast = abs(samples[-1][1] - samples[-3][1]) / (samples[-1][0] - samples[-3][0])
+                if fast > max(3 * sent, 0.3):
+                    self.stop()
+                    time.sleep(1.0)
+                    print(f'    sent {sent:.3f} {"fwd" if direction > 0 else "back"}: RUNAWAY, ~{fast:.2f} m/s real; stopped', flush=True)
+                    raise Runaway(fast)
             if el > 10:
                 break
             self.drive(direction * sent)
@@ -224,6 +235,14 @@ class Calib:
         print(f'    sent {sent:.3f} {"fwd" if direction > 0 else "back"}: real {v:.3f} m/s, moved {moved:.2f} m', flush=True)
         return v if moved > 0.05 else 0.0
 
+    def back_off(self):
+        """After a runaway pass, slowly return toward the start distance."""
+        ahead = self.averaged(lambda: self.sector(0), 0.5)
+        if ahead is not None and ahead < 1.5:
+            behind = self.sector(180, 15)
+            if behind is None or behind > 1.0:
+                self.run_at(0.07, -1, dist=min(0.7, 1.5 - ahead))
+
     def speedmap(self):
         d = self.averaged(lambda: self.sector(0))
         if d is None or not 1.6 <= d <= WALL_MAX:
@@ -233,7 +252,13 @@ class Calib:
             ahead = self.averaged(lambda: self.sector(0), 0.5)
             if ahead is not None and ahead - 0.7 < STOP_FRONT + 0.15:
                 sys.exit(f'wall too close ({ahead:.2f} m) to continue')
-            v = (self.run_at(sent, +1) + self.run_at(sent, -1)) / 2
+            try:
+                v = (self.run_at(sent, +1) + self.run_at(sent, -1)) / 2
+            except Runaway:
+                print(f'  sent {sent:.3f} m/s -> RUNAWAY: the motor speed control loses control here; '
+                      'map ends below this speed', flush=True)
+                self.back_off()
+                break
             print(f'  sent {sent:.3f} m/s -> real {v:.3f} m/s (ratio {v / sent:.2f})', flush=True)
             if v > 0.02 and (not pts or v > pts[-1][0] + 0.005):
                 pts.append((v, sent))
