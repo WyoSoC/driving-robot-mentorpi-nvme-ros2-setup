@@ -136,10 +136,12 @@ controller_server:
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
       desired_linear_vel: 0.18
-      lookahead_dist: 0.5
-      min_lookahead_dist: 0.35
-      max_lookahead_dist: 0.8
-      lookahead_time: 2.0
+      # Look far enough ahead for a car (0.40 m turning radius, servo lag): 0.35 m made it weave
+      # left-right around the path. 0.18 m/s x 2.5 s = 0.45 m.
+      lookahead_dist: 0.6
+      min_lookahead_dist: 0.45
+      max_lookahead_dist: 0.9
+      lookahead_time: 2.5
       use_velocity_scaled_lookahead_dist: true
       transform_tolerance: 0.3
       min_approach_linear_velocity: 0.06

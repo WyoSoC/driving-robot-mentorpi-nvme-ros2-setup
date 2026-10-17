@@ -844,7 +844,9 @@ $('exploreStop').onclick = async () => {
 let exploreLast = '';
 $('slamStop').onclick = () => slamApi('stop');
 $('slamSave').onclick = () => {
-  const name = $('slamName').value.trim() || `map_${new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '')}`;
+  const t = new Date(), p2 = n => String(n).padStart(2, '0');   // local time, like explore_YYYYMMDD_HHMM_car
+  const stamp = `${t.getFullYear()}${p2(t.getMonth() + 1)}${p2(t.getDate())}_${p2(t.getHours())}${p2(t.getMinutes())}`;
+  const name = $('slamName').value.trim() || `map_${stamp}` + (fleet.car ? `_${fleet.car}` : '');
   $('slamName').value = name;
   $('slamMsg').textContent = 'saving…';
   slamApi('save', `?name=${encodeURIComponent(name)}`);
@@ -880,6 +882,9 @@ async function slamPoll() {
       (st.maps.length ? ` · saved: ${st.maps.join(', ')}` : '')
     : (st.running ? 'waiting for the first map…' : `Not mapping.${st.maps.length ? ' Saved maps: ' + st.maps.join(', ') : ''}`);
   if (mapMode === 'slam' && ex.active) $('slamInfo').textContent += ' · Orange: unmapped edges · square: start · green: next goal';
+  if (mapMode === 'slam' && ex.goals && (ex.active || ex.state === 'done' || ex.state === 'stopped'))
+    $('slamInfo').textContent += ` · explored ${ex.mapped_m2} m², goals: ${ex.goals.reached} reached, ` +
+      `${ex.goals.useful} not reached but mapped new area, ${ex.goals.failed} nothing new`;
   drawSlam();
 }
 function drawSlam() {

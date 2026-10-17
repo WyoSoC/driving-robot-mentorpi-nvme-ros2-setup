@@ -4,6 +4,10 @@ Every car's web server answers GET /api/self with its own status (battery, mode,
 plan, map list). PeerManager asks each peer for it twice a second, at all times (also in charging mode:
 the web server keeps running), and backs off to every 3 s while a peer is unreachable.
 
+Maps are kept in sync: every SYNC_S, any map an online peer has and this car doesn't (by content hash)
+is copied here (NAME, or NAME_<car> if a different map here already has that name). Deleting a map
+on one car only sticks if it is deleted on all cars.
+
 Peers come from PEERS="host:port host:port" (start_web_ui.sh builds it from fleet.env, leaving out this
 car). Positions are in the peer's map frame: they only mean something here when both cars use the same
 map (same content hash, see map_store.py).
@@ -20,6 +24,7 @@ POLL_S = 0.5
 OFFLINE_POLL_S = 3.0
 TIMEOUT_S = 1.5
 STALE_S = 3.0           # no answer for this long -> shown as offline
+SYNC_S = 30.0           # map sync interval
 
 
 class Peer:
@@ -44,8 +49,11 @@ class PeerManager:
         self.log = logger
         self.peers = [Peer(a) for a in peers.split() if a]
         self.stop_evt = threading.Event()
+        self.sync_note = ''
         for p in self.peers:
             threading.Thread(target=self._loop, args=(p,), daemon=True).start()
+        if self.peers:
+            threading.Thread(target=self._sync_loop, daemon=True).start()
         if self.peers:
             self.log.info('status exchange with ' + ', '.join(p.addr for p in self.peers))
         else:
@@ -69,6 +77,35 @@ class PeerManager:
                 self.log.info(f'{p.car} ({p.addr}) ' + ('online' if online else f'offline: {p.error}'))
                 was_online = online
             self.stop_evt.wait(POLL_S if online else OFFLINE_POLL_S)
+
+    def _sync_loop(self):
+        self.stop_evt.wait(5.0)
+        while not self.stop_evt.is_set():
+            try:
+                self.sync_maps()
+            except Exception as exc:
+                self.log.warn(f'map sync: {exc}')
+            self.stop_evt.wait(SYNC_S)
+
+    def sync_maps(self):
+        """Copy every map an online peer has and this car lacks (same content = same map)."""
+        copied = []
+        for p in self.peers:
+            if not p.online() or not p.status:
+                continue
+            have = {m['hash'] for m in map_store.listing()}
+            for m in p.status.get('maps') or []:
+                if m.get('hash') in have or not map_store.NAME_RE.match(m.get('name', '')):
+                    continue
+                try:
+                    local = self.fetch_map(p.car, m['name'])
+                    copied.append(f'{local} (from {p.car})')
+                    have.add(m['hash'])
+                except Exception as exc:
+                    self.log.warn(f'map sync: cannot copy "{m.get("name")}" from {p.car}: {exc}')
+        if copied:
+            self.sync_note = 'copied ' + ', '.join(copied)
+        return copied
 
     def shutdown(self):
         self.stop_evt.set()

@@ -2,15 +2,22 @@
 
 start(radius): starts SLAM (if not running) and Nav2 on the live SLAM map (nav.launch.py slam:=true), then
 repeatedly drives to the best "frontier" (the edge between mapped free floor and unmapped space) until none
-is left within `radius` m of the start, drives back to the start and saves the map (explore_YYYYMMDD_HHMM).
+is left within `radius` m of the start, drives back to the start and saves the map
+(explore_YYYYMMDD_HHMM_<car>, local time; the other cars copy it, see peer_manager.py).
 
 Goals are only ever placed on mapped free floor, away from walls (CLEAR_OCC) and from unmapped space
 (CLEAR_UNKNOWN), and the planner may not plan through unmapped space (allow_unknown: false).
 Note: the lidar can't see a drop (stairs): the floor past a stair edge looks free. Use the radius as a fence.
 
+Success is measured by what was mapped, not by arriving: a goal that is aborted but mapped new area
+(>= GAIN_OK) counts as useful (only that goal point is avoided afterwards). A goal "fails" when it adds
+nothing; then its whole frontier is skipped. The car is "stuck" only when it neither moves nor maps
+anything for STUCK_S. Goals that need the car to turn around cost extra (TURN_COST), so it keeps going
+roughly the way it faces instead of hunting left and right.
+
 It stops (navigation stopped, SLAM kept so the map can be saved) on: Stop, the joystick or E-stop (they
-cancel the goal), low battery, charging mode, SLAM or navigation stopping, too many failed goals, or
-MAX_TIME.
+cancel the goal), low battery, charging mode, SLAM or navigation stopping, MAX_FAILS useless goals in a
+row, or MAX_TIME.
 """
 import math
 import threading
@@ -29,9 +36,12 @@ GOAL_NEAR = 1.0          # m, goal at most this far from its frontier
 MIN_FRONTIER = 0.50      # m, smaller frontiers are ignored (noise, slow to chase)
 MIN_GOAL_DIST = 0.70     # m, closer goals: short awkward hops for a car
 BLACKLIST_R = 0.5        # m, around failed goals
-GOAL_TIMEOUT = 120       # s per goal
-STUCK_S = 25             # s without moving STUCK_M while driving to a goal -> give up on it
+GOAL_TIMEOUT = 180       # s per goal, unless it keeps mapping new area
+STUCK_S = 40             # s without moving STUCK_M and without mapping GAIN_STEP -> give up on the goal
 STUCK_M = 0.15
+GAIN_OK = 0.5            # m2 newly mapped while going for a goal: the attempt was useful
+GAIN_STEP = 0.2          # m2 newly mapped counts as progress (not stuck)
+TURN_COST = 0.8          # m of extra distance per radian the car must turn towards a goal
 FAILED_FRONTIER_R = 0.8  # m, frontiers whose centre is this close to a failed one are skipped
 MAX_FAILS = 6            # failed goals in a row -> give up
 MAX_TIME = 20 * 60       # s
@@ -41,7 +51,7 @@ STEP_S = 1.0
 SMOOTH_CELLS = 2          # closing iterations on the free space
 
 
-def frontier_goals(grid, res, origin, car_xy, fence_xy, radius, blacklist, failed_centers=()):
+def frontier_goals(grid, res, origin, car_xy, fence_xy, radius, blacklist, failed_centers=(), car_yaw=None):
     """Frontier clusters and a goal for each. grid: int8 [h, w] (-1 unknown, 0..100), row 0 = min y.
     Returns ([{'goal': [x, y, yaw], 'center': [x, y], 'size': m, 'dist': m}], frontier cells [[x, y], ...])."""
     h, w = grid.shape
@@ -118,20 +128,24 @@ def frontier_goals(grid, res, origin, car_xy, fence_xy, radius, blacklist, faile
         i = int(np.argmin(score))
         x, y = float(gx[i]), float(gy[i])
         yaw = math.atan2(cy - y, cx - x)              # face the unmapped space
+        turn = 0.0
+        if car_yaw is not None:
+            d = math.atan2(y - car_xy[1], x - car_xy[0]) - car_yaw
+            turn = abs(math.atan2(math.sin(d), math.cos(d)))
         out.append({'goal': [round(x, 3), round(y, 3), round(yaw, 3)], 'center': [round(cx, 3), round(cy, 3)],
-                    'size': round(size_m, 2), 'dist': round(float(dcar[i]), 2)})
+                    'size': round(size_m, 2), 'dist': round(float(dcar[i]), 2), 'turn': round(turn, 2)})
         sel = mask[rows_all, cols_all]
         for r, c in list(zip(rows_all[sel], cols_all[sel]))[::3]:
             x_, y_ = to_xy(r, c)
             cells.append([round(x_, 2), round(y_, 2)])
-    # best first: close and large
-    out.sort(key=lambda f: f['dist'] - 0.5 * min(f['size'], 3.0))
+    # best first: close, ahead of the car, large
+    out.sort(key=lambda f: f['dist'] + TURN_COST * f['turn'] - 0.5 * min(f['size'], 3.0))
     return out, cells
 
 
 class Explorer:
-    def __init__(self, node, slam, nav):
-        self.node, self.slam, self.nav = node, slam, nav
+    def __init__(self, node, slam, nav, car='car'):
+        self.node, self.slam, self.nav, self.car = node, slam, nav, car
         self.log = node.get_logger()
         self.lock = threading.Lock()
         self.state = 'off'      # off | starting | exploring | returning | done | stopped
@@ -144,6 +158,9 @@ class Explorer:
         self.blacklist, self.visited, self.failed_centers = [], [], []
         self.goal_center = None
         self.progress_at, self.progress_xy = None, None
+        self.progress_known = self.known_at_send = 0.0
+        self.reached = self.partial = self.failed = 0
+        self.mapped_m2 = 0.0
         self.fails = 0
         self.empty_checks = 0
         self.quick_retries = 0
@@ -177,6 +194,7 @@ class Explorer:
             self.goal, self.frontiers, self.cells = None, [], []
             self.blacklist, self.visited, self.failed_centers = [], [], []
             self.goal_center = None
+            self.reached = self.partial = self.failed = 0
             self.fails = self.empty_checks = self.quick_retries = 0
             self.goal_sent_at = None
             self.saved_as = None
@@ -187,6 +205,8 @@ class Explorer:
             return True, self.message
 
     def stop(self, reason='exploration stopped'):
+        if self.active():
+            self.mapped_m2 = self._known_m2()
         with self.lock:
             was = self.active()
             self.state = 'stopped' if was else self.state
@@ -210,6 +230,12 @@ class Explorer:
                 self.log.error(f'exploration error: {exc!r}')
                 if self.active():
                     self.stop(f'exploration error: {exc}')
+
+    def _known_m2(self):
+        g = self._grid()
+        if g is None:
+            return 0.0
+        return float(np.count_nonzero(g[0] >= 0)) * g[1] * g[1]
 
     def _grid(self):
         msg = self.slam.grid
@@ -258,13 +284,16 @@ class Explorer:
 
         if self.goal is not None:
             if gs in ('sending', 'active'):
-                if pose is not None and (self.progress_at is None or
-                                         math.hypot(pose[0] - self.progress_xy[0], pose[1] - self.progress_xy[1]) > STUCK_M):
-                    self.progress_xy, self.progress_at = pose[:2], now
+                known = self._known_m2()
+                moved = pose is not None and math.hypot(pose[0] - self.progress_xy[0],
+                                                        pose[1] - self.progress_xy[1]) > STUCK_M
+                if moved or known - self.progress_known > GAIN_STEP:
+                    self.progress_xy = pose[:2] if pose is not None else self.progress_xy
+                    self.progress_at, self.progress_known = now, known
                 if now - self.progress_at > STUCK_S:
                     self.own_cancel = True
                     self.nav.cancel('stuck')
-                    self._failed(f'stuck (no progress for {STUCK_S} s)')
+                    self._failed(f'stuck (no movement, nothing new mapped for {STUCK_S} s)')
                     if self.state == 'returning':
                         return self._finish()
                 elif now - self.goal_sent_at > GOAL_TIMEOUT:
@@ -287,6 +316,7 @@ class Explorer:
                     return self._finish()
                 self.fails = 0
                 self.quick_retries = 0
+                self.reached += 1
                 self.visited.append(self.goal[:2])
                 self.goal = None
             else:
@@ -304,7 +334,8 @@ class Explorer:
             return
         grid, res, origin = g
         fronts, cells = frontier_goals(grid, res, origin, pose[:2], self.home[:2], self.radius,
-                                       self.blacklist + self.visited, self.failed_centers)
+                                       self.blacklist + self.visited, self.failed_centers,
+                                       car_yaw=pose[2])
         self.frontiers, self.cells = fronts, cells
         if not fronts:
             self.empty_checks += 1
@@ -332,9 +363,19 @@ class Explorer:
             return
         self.goal, self.goal_sent_at, self.own_cancel = list(goal), time.monotonic(), False
         self.progress_at, self.progress_xy = time.monotonic(), (self.slam.pose or goal)[:2]
+        self.progress_known = self.known_at_send = self._known_m2()
 
     def _failed(self, why):
         quick = self.goal_sent_at is not None and time.monotonic() - self.goal_sent_at < 3.0
+        gain = self._known_m2() - self.known_at_send if self.goal is not None else 0.0
+        if self.goal is not None and not quick and gain >= GAIN_OK:
+            # did not arrive, but mapped new area on the way: a useful attempt. Avoid only this goal point.
+            self.blacklist.append(self.goal[:2])
+            self.partial += 1
+            self.fails = 0
+            self.log.info(f'exploration goal {self.goal} not reached ({why}) but mapped {gain:.1f} m2: useful')
+            self.goal = None
+            return
         if self.goal is not None and quick and self.quick_retries < 2:
             # failed at once: usually navigation had no map yet. Try again, don't blacklist.
             self.quick_retries += 1
@@ -345,7 +386,8 @@ class Explorer:
             self.blacklist.append(self.goal[:2])
             if self.goal_center:
                 self.failed_centers.append(self.goal_center)
-            self.log.info(f'exploration goal {self.goal} failed: {why}')
+            self.failed += 1
+            self.log.info(f'exploration goal {self.goal} failed ({why}), nothing new mapped: skipping its frontier')
         self.fails += 1
         self.goal = None
 
@@ -356,7 +398,8 @@ class Explorer:
             return
         grid, res, origin = g
         fronts, cells = frontier_goals(grid, res, origin, pose[:2], self.home[:2], self.radius,
-                                       self.blacklist + self.visited, self.failed_centers)
+                                       self.blacklist + self.visited, self.failed_centers,
+                                       car_yaw=pose[2])
         self.frontiers, self.cells = fronts, cells
         gx, gy = self.goal[0], self.goal[1]
         if not any(math.hypot(f['goal'][0] - gx, f['goal'][1] - gy) < 1.0 for f in fronts):
@@ -366,7 +409,8 @@ class Explorer:
             self.goal = None
 
     def _finish(self):
-        name = datetime.now().strftime('explore_%Y%m%d_%H%M')
+        self.mapped_m2 = self._known_m2()
+        name = datetime.now().strftime('explore_%Y%m%d_%H%M_') + self.car
         ok, msg = self.slam.save(name)
         self.saved_as = name if ok else None
         if self.nav.running() and self.nav.slam_mode:
@@ -390,6 +434,8 @@ class Explorer:
             'frontiers': [f['center'] + [f['size']] for f in self.frontiers][:30],
             'cells': self.cells[:1500] if self.active() else [],
             'fails': self.fails,
+            'goals': {'reached': self.reached, 'useful': self.partial, 'failed': self.failed},
+            'mapped_m2': round(self._known_m2() if self.active() else self.mapped_m2, 1),
             'elapsed_s': round(time.monotonic() - self.started_at) if self.started_at and self.active() else None,
             'saved_as': self.saved_as,
         }

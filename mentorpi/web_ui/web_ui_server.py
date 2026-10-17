@@ -105,7 +105,7 @@ class WebBridge(Node):
 
         self.slam = SlamManager(self)
         self.nav = NavManager(self, self.slam.tf, self.slam)
-        self.explorer = Explorer(self, self.slam, self.nav)
+        self.explorer = Explorer(self, self.slam, self.nav, CAR_NAME)
         self.peers = PeerManager(CAR_NAME, PEERS, self.get_logger())
 
     def self_status(self):
