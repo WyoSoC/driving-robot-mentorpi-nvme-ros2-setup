@@ -56,13 +56,13 @@
     box-shadow: 0 0 0 3px rgba(248,81,73,.25); }
   .estop.engaged { background: var(--warn); color: #111; box-shadow: 0 0 0 3px rgba(210,153,34,.35); }
 
-  /* Desktop: left column = video + IMU/odometry pair, right column = drive + lidar.
-     Narrow: columns dissolve and panels stack in priority order. */
-  main { display: grid; gap: 10px; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); align-items: start; }
-  .col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-  .pair { display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-  #systemPanel, #mapPanel { grid-column: 1 / -1; }
-  #slamMap { aspect-ratio: 16 / 9; background: #cdcdcd; }
+  /* Three equal columns, each a stack:  Camera | Drive | Odometry
+                                         Lidar  | IMU   | Map
+     System full width below. Narrow: columns dissolve, panels stack in priority order. */
+  main { display: grid; gap: 10px; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: start; }
+  .col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }   /* panels stack, no row gaps */
+  #systemPanel { grid-column: 1 / -1; }
+  #slamMap { aspect-ratio: 4 / 3; background: #cdcdcd; }
   .slam-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 6px; }
   .slam-bar input { background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
     border-radius: 8px; padding: 4px 8px; width: 10em; max-width: 100%; }
@@ -72,22 +72,9 @@
   .slam-bar[hidden] { display: none; }
   .btn.tool-on { background: var(--accent); color: #111; border-color: var(--accent); }
   #slamMap.picking { cursor: crosshair; touch-action: none; }
-  /* Wide: three columns, everything important on one screen.
-       Camera | Map    | Drive
-       IMU    | Odom   | Lidar
-       System (full width)                                                    */
-  @media (min-width: 1200px) {
-    main { grid-template-columns: minmax(0, 1.25fr) minmax(0, 1.25fr) minmax(0, 0.9fr);
-      grid-template-areas: "video map drive" "imu odom lidar" "sys sys sys"; }
-    .col, .pair { display: contents; }
-    #videoPanel { grid-area: video; } #mapPanel { grid-area: map; grid-column: auto; }
-    #drivePanel { grid-area: drive; } #imuPanel { grid-area: imu; } #odomPanel { grid-area: odom; }
-    #lidarPanel { grid-area: lidar; } #systemPanel { grid-area: sys; }
-    #slamMap { aspect-ratio: 4 / 3; }
-  }
   @media (max-width: 900px) {
     main { display: flex; flex-direction: column; align-items: stretch; }
-    .col, .pair { display: contents; }
+    .col { display: contents; }
     #videoPanel { order: 1; } #drivePanel { order: 2; } #lidarPanel { order: 3; }
     #imuPanel { order: 4; } #odomPanel { order: 5; } #mapPanel { order: 6; } #systemPanel { order: 7; }
   }
@@ -200,35 +187,20 @@
       </div>
     </div>
   </section>
-
-  <div class="pair">
-  <section class="panel" id="imuPanel">
-    <h2>IMU</h2>
-    <canvas id="attitude"></canvas>
+  <section class="panel" id="lidarPanel">
+    <h2>Lidar <span class="right">
+      <select id="lidarRange" aria-label="Lidar view range">
+        <option value="1">1 m</option><option value="2" selected>2 m</option>
+        <option value="4">4 m</option><option value="8">8 m</option>
+      </select></span></h2>
+    <canvas id="lidar"></canvas>
     <div class="readout">
-      <div><div class="k">Roll</div><div class="v" id="iRoll">--</div></div>
-      <div><div class="k">Pitch</div><div class="v" id="iPitch">--</div></div>
-      <div><div class="k" title="From the EKF (/odom): gyro turn rate, frozen while parked">Heading</div><div class="v" id="iYaw">--</div></div>
-      <div><div class="k">Gyro z</div><div class="v" id="iGz">--</div></div>
-      <div><div class="k">Accel x</div><div class="v" id="iAx">--</div></div>
-      <div><div class="k">Accel y</div><div class="v" id="iAy">--</div></div>
-      <div><div class="k">Accel z</div><div class="v" id="iAz">--</div></div>
+      <div><div class="k">Nearest</div><div class="v" id="lNear">--</div></div>
+      <div><div class="k">Bearing</div><div class="v" id="lBear">--</div></div>
+      <div><div class="k">Front ±30°</div><div class="v" id="lFront">--</div></div>
+      <div><div class="k">Points</div><div class="v" id="lPts">--</div></div>
     </div>
   </section>
-
-  <section class="panel" id="odomPanel">
-    <h2>Odometry <span class="right"><button class="btn" id="trailReset" style="padding:2px 8px;font-size:12px">Clear trail</button></span></h2>
-    <canvas id="trail"></canvas>
-    <div class="readout">
-      <div><div class="k">X</div><div class="v" id="oX">--</div></div>
-      <div><div class="k">Y</div><div class="v" id="oY">--</div></div>
-      <div><div class="k">Heading</div><div class="v" id="oYaw">--</div></div>
-      <div><div class="k">Speed</div><div class="v" id="oV">--</div></div>
-      <div><div class="k">Turn rate</div><div class="v" id="oW">--</div></div>
-      <div><div class="k">Distance</div><div class="v" id="oDist">0.00 m</div></div>
-    </div>
-  </section>
-  </div>
   </div>
 
   <div class="col">
@@ -253,23 +225,34 @@
     <div class="hint">Drag the pad, or use <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / arrow keys.
       <kbd>Space</kbd> = E-stop. The car stops if this page loses connection.</div>
   </section>
-
-  <section class="panel" id="lidarPanel">
-    <h2>Lidar <span class="right">
-      <select id="lidarRange" aria-label="Lidar view range">
-        <option value="1">1 m</option><option value="2" selected>2 m</option>
-        <option value="4">4 m</option><option value="8">8 m</option>
-      </select></span></h2>
-    <canvas id="lidar"></canvas>
+  <section class="panel" id="imuPanel">
+    <h2>IMU</h2>
+    <canvas id="attitude"></canvas>
     <div class="readout">
-      <div><div class="k">Nearest</div><div class="v" id="lNear">--</div></div>
-      <div><div class="k">Bearing</div><div class="v" id="lBear">--</div></div>
-      <div><div class="k">Front ±30°</div><div class="v" id="lFront">--</div></div>
-      <div><div class="k">Points</div><div class="v" id="lPts">--</div></div>
+      <div><div class="k">Roll</div><div class="v" id="iRoll">--</div></div>
+      <div><div class="k">Pitch</div><div class="v" id="iPitch">--</div></div>
+      <div><div class="k" title="From the EKF (/odom): gyro turn rate, frozen while parked">Heading</div><div class="v" id="iYaw">--</div></div>
+      <div><div class="k">Gyro z</div><div class="v" id="iGz">--</div></div>
+      <div><div class="k">Accel x</div><div class="v" id="iAx">--</div></div>
+      <div><div class="k">Accel y</div><div class="v" id="iAy">--</div></div>
+      <div><div class="k">Accel z</div><div class="v" id="iAz">--</div></div>
     </div>
   </section>
   </div>
 
+  <div class="col">
+  <section class="panel" id="odomPanel">
+    <h2>Odometry <span class="right"><button class="btn" id="trailReset" style="padding:2px 8px;font-size:12px">Clear trail</button></span></h2>
+    <canvas id="trail"></canvas>
+    <div class="readout">
+      <div><div class="k">X</div><div class="v" id="oX">--</div></div>
+      <div><div class="k">Y</div><div class="v" id="oY">--</div></div>
+      <div><div class="k">Heading</div><div class="v" id="oYaw">--</div></div>
+      <div><div class="k">Speed</div><div class="v" id="oV">--</div></div>
+      <div><div class="k">Turn rate</div><div class="v" id="oW">--</div></div>
+      <div><div class="k">Distance</div><div class="v" id="oDist">0.00 m</div></div>
+    </div>
+  </section>
   <section class="panel" id="mapPanel">
     <h2>Map <span class="right"><span class="tabs" id="mapTabs"><button data-mode="slam" class="active">Mapping</button><button data-mode="nav">Navigate</button></span>
       <span class="pill" id="slamState">off</span></span></h2>
@@ -298,6 +281,7 @@
     <div class="slam-info" id="slamInfo">Lidar mapping with slam_toolbox. Drive slowly (≤ 0.3 m/s) and come back past
       your start point now and then so the map can close loops. Saved maps stay on this car.</div>
   </section>
+  </div>
 
   <section class="panel" id="systemPanel">
     <h2>System</h2>
