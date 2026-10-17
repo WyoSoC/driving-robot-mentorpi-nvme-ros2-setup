@@ -40,6 +40,7 @@ UID_NUM=$(id -u)
 echo "Starting ${CONTAINER_NAME} (${CAR_NAME}, ROS_DOMAIN_ID=${ROS_DOMAIN_ID})..."
 docker run -d \
     --name "${CONTAINER_NAME}" \
+    --init \
     --privileged \
     --network host \
     -e DISPLAY=:0 \
