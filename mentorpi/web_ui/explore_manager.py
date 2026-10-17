@@ -26,10 +26,13 @@ CLEAR_OCC = 0.30         # m, goal at least this far from walls
 CLEAR_UNKNOWN = 0.15     # m, and from unmapped space
 PASS_OCC = 0.14          # m, cells the car can pass (connectivity check)
 GOAL_NEAR = 1.0          # m, goal at most this far from its frontier
-MIN_FRONTIER = 0.30      # m, smaller frontiers are ignored (noise)
+MIN_FRONTIER = 0.50      # m, smaller frontiers are ignored (noise, slow to chase)
 MIN_GOAL_DIST = 0.70     # m, closer goals: short awkward hops for a car
 BLACKLIST_R = 0.5        # m, around failed goals
 GOAL_TIMEOUT = 120       # s per goal
+STUCK_S = 25             # s without moving STUCK_M while driving to a goal -> give up on it
+STUCK_M = 0.15
+FAILED_FRONTIER_R = 0.8  # m, frontiers whose centre is this close to a failed one are skipped
 MAX_FAILS = 6            # failed goals in a row -> give up
 MAX_TIME = 20 * 60       # s
 START_TIMEOUT = 90       # s for SLAM + Nav2 to come up
@@ -38,7 +41,7 @@ STEP_S = 1.0
 SMOOTH_CELLS = 2          # closing iterations on the free space
 
 
-def frontier_goals(grid, res, origin, car_xy, fence_xy, radius, blacklist):
+def frontier_goals(grid, res, origin, car_xy, fence_xy, radius, blacklist, failed_centers=()):
     """Frontier clusters and a goal for each. grid: int8 [h, w] (-1 unknown, 0..100), row 0 = min y.
     Returns ([{'goal': [x, y, yaw], 'center': [x, y], 'size': m, 'dist': m}], frontier cells [[x, y], ...])."""
     h, w = grid.shape
@@ -86,6 +89,8 @@ def frontier_goals(grid, res, origin, car_xy, fence_xy, radius, blacklist):
             continue
         cy, cx = to_xy(*centers[k])[1], to_xy(*centers[k])[0]
         if radius and math.hypot(cx - fence_xy[0], cy - fence_xy[1]) > radius:
+            continue
+        if any(math.hypot(cx - fx, cy - fy) < FAILED_FRONTIER_R for fx, fy in failed_centers):
             continue
         mask = clusters == k + 1
         # goal: a reachable safe cell close to this frontier, the one nearest to the car
@@ -136,7 +141,9 @@ class Explorer:
         self.goal = None
         self.goal_sent_at = None
         self.frontiers, self.cells = [], []
-        self.blacklist, self.visited = [], []
+        self.blacklist, self.visited, self.failed_centers = [], [], []
+        self.goal_center = None
+        self.progress_at, self.progress_xy = None, None
         self.fails = 0
         self.empty_checks = 0
         self.quick_retries = 0
@@ -168,7 +175,8 @@ class Explorer:
             self.dry = dry
             self.home = None
             self.goal, self.frontiers, self.cells = None, [], []
-            self.blacklist, self.visited = [], []
+            self.blacklist, self.visited, self.failed_centers = [], [], []
+            self.goal_center = None
             self.fails = self.empty_checks = self.quick_retries = 0
             self.goal_sent_at = None
             self.saved_as = None
@@ -250,7 +258,16 @@ class Explorer:
 
         if self.goal is not None:
             if gs in ('sending', 'active'):
-                if now - self.goal_sent_at > GOAL_TIMEOUT:
+                if pose is not None and (self.progress_at is None or
+                                         math.hypot(pose[0] - self.progress_xy[0], pose[1] - self.progress_xy[1]) > STUCK_M):
+                    self.progress_xy, self.progress_at = pose[:2], now
+                if now - self.progress_at > STUCK_S:
+                    self.own_cancel = True
+                    self.nav.cancel('stuck')
+                    self._failed(f'stuck (no progress for {STUCK_S} s)')
+                    if self.state == 'returning':
+                        return self._finish()
+                elif now - self.goal_sent_at > GOAL_TIMEOUT:
                     self.own_cancel = True
                     self.nav.cancel('goal took too long')
                     self._failed('took too long')
@@ -287,17 +304,19 @@ class Explorer:
             return
         grid, res, origin = g
         fronts, cells = frontier_goals(grid, res, origin, pose[:2], self.home[:2], self.radius,
-                                       self.blacklist + [v for v in self.visited])
+                                       self.blacklist + self.visited, self.failed_centers)
         self.frontiers, self.cells = fronts, cells
         if not fronts:
             self.empty_checks += 1
             self.message = f'no frontier left? checking ({self.empty_checks}/{NO_FRONTIER_CHECKS})'
             if self.empty_checks >= NO_FRONTIER_CHECKS:
                 self.state, self.message = 'returning', 'map complete: driving back to the start'
+                self.goal_center = None
                 self._send(self.home)
             return
         self.empty_checks = 0
         f = fronts[0]
+        self.goal_center = f['center']
         if self.dry:
             self.message = f'dry run: would go to {f["goal"]} ({len(fronts)} frontiers)'
             self.dry_goal = f['goal']
@@ -312,6 +331,7 @@ class Explorer:
             self._failed(msg)
             return
         self.goal, self.goal_sent_at, self.own_cancel = list(goal), time.monotonic(), False
+        self.progress_at, self.progress_xy = time.monotonic(), (self.slam.pose or goal)[:2]
 
     def _failed(self, why):
         quick = self.goal_sent_at is not None and time.monotonic() - self.goal_sent_at < 3.0
@@ -323,6 +343,8 @@ class Explorer:
             return
         if self.goal is not None:
             self.blacklist.append(self.goal[:2])
+            if self.goal_center:
+                self.failed_centers.append(self.goal_center)
             self.log.info(f'exploration goal {self.goal} failed: {why}')
         self.fails += 1
         self.goal = None
@@ -334,7 +356,7 @@ class Explorer:
             return
         grid, res, origin = g
         fronts, cells = frontier_goals(grid, res, origin, pose[:2], self.home[:2], self.radius,
-                                       self.blacklist + self.visited)
+                                       self.blacklist + self.visited, self.failed_centers)
         self.frontiers, self.cells = fronts, cells
         gx, gy = self.goal[0], self.goal[1]
         if not any(math.hypot(f['goal'][0] - gx, f['goal'][1] - gy) < 1.0 for f in fronts):
