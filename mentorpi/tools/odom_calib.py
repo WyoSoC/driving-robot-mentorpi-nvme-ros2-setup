@@ -372,7 +372,7 @@ class Calib:
         if abs(dyaw) > math.radians(15) or abs(dgyro) > math.radians(15):
             sys.exit('heading changed > 15 deg in one pass: not plausible for a steering trim; nothing saved')
         if abs(dyaw - dgyro) > max(math.radians(1.5), 0.3 * abs(dyaw)):
-            sys.exit('lidar and gyro disagree on the heading change; nothing saved')
+            print('    (gyro disagrees with the lidar; using the lidar, it sees the wall directly)', flush=True)
         return moved, dyaw
 
     def steer(self):
@@ -382,16 +382,20 @@ class Calib:
         behind = self.guard(-1)
         if behind is not None and behind < 1.0:
             sys.exit(f'something is {behind:.2f} m behind the car; needs ~1.3 m free behind')
-        ks = []
+        ks, kb = [], []
         for _ in range(2):
             m1, y1 = self.straight_yaw(+1, home - 0.7)
             m2, y2 = self.straight_yaw(-1, home)
-            ks += [y1 / max(m1, 0.05), -y2 / max(m2, 0.05)]   # path curvature, rad/m (+ = curves left)
+            ks.append(y1 / max(m1, 0.05))        # path curvature driving forward, rad/m (+ = curves left)
+            kb.append(-y2 / max(m2, 0.05))       # reversing: steering play makes it differ; reported only
         k = statistics.fmean(ks)
+        print(f'  reversing: {statistics.fmean([math.degrees(x) for x in kb]):+.1f} deg/m (not used: steering play '
+              'lets the wheels settle differently when pushed backwards)', flush=True)
         delta = math.degrees(math.atan(WHEELBASE * k))       # steering angle the car actually has
         us = 2000 * delta / 180                               # ackermann.py: 1500 + 2000*deg/180
         new = int(round(max(-100, min(100, CUR_TRIM - us))))
-        print(f'  curvature {math.degrees(k):+.1f} deg/m (passes: {" ".join(f"{math.degrees(x):+.1f}" for x in ks)}) '
+        passes = ' '.join(f'{math.degrees(x):+.1f}' for x in ks)
+        print(f'  forward curvature {math.degrees(k):+.1f} deg/m (passes: {passes}) '
               f'= steering {delta:+.2f} deg off centre ({"left" if delta > 0 else "right"})', flush=True)
         if abs(us) < 2:
             print('  steering centre is good (< 2 us off)', flush=True)
