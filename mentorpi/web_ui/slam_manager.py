@@ -6,7 +6,8 @@
 - /map (OccupancyGrid) is rendered to a PNG on the car; the browser fetches the image instead of
   the raw grid (hundreds of KB per update, too heavy over a slow link).
 - the car's pose in the map frame comes from TF map -> base_footprint; its path is kept here.
-- save: map image + yaml (nav2 map_server format) and slam_toolbox's pose graph
+- save: map image + yaml (nav2 map_server format) and slam_toolbox's pose graph; after Stop, the
+  map still on screen is saved as PNG + yaml (no pose graph)
   (.posegraph/.data, to continue mapping later) into MAPS_DIR, a per-car host folder
   (mentorpi/maps/, mounted by run_container.sh).
 """
@@ -158,12 +159,26 @@ class SlamManager:
             raise RuntimeError(f'{client.srv_name} timed out')
         return future.result()
 
+    def save_rendered(self, path):
+        """After Stop: save the map still on screen (PNG + nav2 map yaml; no pose graph)."""
+        png, meta = self.png, self.meta
+        if not png or not meta:
+            return False, 'no map to save: start mapping first'
+        with open(path + '.png', 'wb') as f:
+            f.write(png)
+        with open(path + '.yaml', 'w') as f:   # 205 (unknown) -> (255-205)/255 = 0.196, not < free_thresh
+            f.write(f"image: {os.path.basename(path)}.png\nmode: trinary\nresolution: {meta['resolution']:.3f}\n"
+                    f"origin: [{meta['origin'][0]:.4f}, {meta['origin'][1]:.4f}, 0.0]\nnegate: 0\n"
+                    f"occupied_thresh: 0.65\nfree_thresh: 0.196\n")
+        self.message = f'saved map "{os.path.basename(path)}" (image + yaml; mapping was stopped, no pose graph)'
+        return True, self.message
+
     def save(self, name):
         if not NAME_RE.match(name or ''):
             return False, 'name: 1-40 letters, digits, - or _'
-        if not self.running():
-            return False, 'start mapping first (saving needs slam_toolbox running)'
         path = os.path.join(MAPS_DIR, name)
+        if not self.running():
+            return self.save_rendered(path)
         try:
             req = SaveMap.Request()
             req.name = String(data=path)
