@@ -41,9 +41,13 @@ yaml.safe_dump({'costmap': {'costmap': {'ros__parameters': cm}}}, open('/tmp/fle
 procs = [subprocess.Popen(['ros2','run','tf2_ros','static_transform_publisher','--frame-id','map','--child-frame-id','base_footprint'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL),
          subprocess.Popen(['ros2','run','nav2_costmap_2d','nav2_costmap_2d','--ros-args','-r','__ns:=/costmap','--params-file','/tmp/fleet_cm.yaml'],stdout=open('/tmp/fleet_cm.log','w'),stderr=subprocess.STDOUT)]
 try:
-    time.sleep(4)
-    for t in ('configure','activate'):
-        print(t, subprocess.run(['ros2','lifecycle','set','/costmap/costmap',t],capture_output=True,text=True).stdout.strip())
+    for t in ('configure','activate'):        # retry: the node can take a while on a busy car
+        for _ in range(15):
+            out = subprocess.run(['ros2','lifecycle','set','/costmap/costmap',t],capture_output=True,text=True).stdout.strip()
+            if 'successful' in out.lower():
+                break
+            time.sleep(2)
+        print(t, out)
     rclpy.init()
     node = Node('fleet_test')
     tf = Buffer(); TransformListener(tf, node)

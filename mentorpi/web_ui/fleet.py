@@ -7,8 +7,11 @@ other car's frame into this one).
 1. Costmap: the other car's body is published as a point cloud (/fleet/cloud, in base_footprint) that
    Nav2's fleet_layer marks in both costmaps, so the planner routes around it even where the lidar
    can't see it (around a corner). /fleet/clear (an empty 360-degree scan) wipes the old marks every
-   cycle, so a car that drove on leaves no ghost behind. The body is grown by how far the other car can
-   have moved since its status was sent.
+   cycle, so a car that drove on leaves no ghost behind. The body of a car that is driving to a goal is
+   grown by how far it can have moved since its status was sent (a parked one is not). Marks on this
+   car's own footprint are left out: two cars can't overlap, so that is localization error, and it
+   would put this car's start in an obstacle (the planner then finds no path at all). The lidar still
+   sees the other car where it really is.
 
 2. Right of way: if this car's next PATH_AHEAD_M of planned path runs into another car that is driving
    to a goal, this car pauses its goal ("yielding", motors stopped) and resumes it once the way has been
@@ -38,6 +41,7 @@ CLEAR_S = 2.0
 YIELD_MAX_S = 30.0
 CLEAR_RANGE = 8.0          # /fleet/clear wipes fleet marks within this range
 CLEAR_STEP_DEG = 0.25      # its ray spacing (1 deg left cells untouched between rays at ~2 m)
+OWN_MARGIN = 0.06          # no fleet marks within this of this car's own body
 
 
 def body_points(x, y, yaw, grow):
@@ -150,7 +154,8 @@ class Fleet:
         scan.ranges = [math.inf] * n
         self.clear_pub.publish(scan)
 
-        pts = [body_points(o['x'], o['y'], o['yaw'], PEER_SPEED * (o['age_s'] + 1.0 / RATE_HZ))
+        pts = [body_points(o['x'], o['y'], o['yaw'],
+                           PEER_SPEED * (o['age_s'] + 1.0 / RATE_HZ) if o['driving'] else 0.0)
                for o in others]
         xy = np.concatenate(pts) if pts else np.zeros((0, 2))
         # map -> base_footprint
@@ -159,6 +164,9 @@ class Fleet:
         c, s = math.cos(yaw), math.sin(yaw)
         bx = tr.x + c * xy[:, 0] - s * xy[:, 1]
         by = tr.y + s * xy[:, 0] + c * xy[:, 1]
+        mine = ((bx > BODY[1] - OWN_MARGIN) & (bx < BODY[0] + OWN_MARGIN) &
+                (np.abs(by) < BODY[2] + OWN_MARGIN))
+        bx, by = bx[~mine], by[~mine]
         cloud_pts = np.stack([bx, by, np.full_like(bx, 0.05)], axis=-1).astype(np.float32)
         hdr = scan.header
         self.cloud_pub.publish(point_cloud2.create_cloud_xyz32(hdr, cloud_pts.tolist()))
