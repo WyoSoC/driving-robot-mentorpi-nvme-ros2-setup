@@ -264,8 +264,8 @@ class Calib:
 
     def speedmap(self):
         d = self.averaged(lambda: self.sector(0))
-        if d is None or not 1.6 <= d <= WALL_MAX:
-            sys.exit(f'need a flat wall straight ahead 1.6-{WALL_MAX} m away (lidar sees {d})')
+        if d is None or not 1.5 <= d <= WALL_MAX:
+            sys.exit(f'need a flat wall straight ahead 1.5-{WALL_MAX} m away (lidar sees {d})')
         home = d
         behind = self.guard(-1)
         if behind is not None and behind < 1.0:

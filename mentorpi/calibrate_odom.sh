@@ -55,7 +55,7 @@ restart_bringup() {
 
 case "$MODE" in
 speedmap) cat <<'EOF'
-Speed map: place the car on the floor, wheels straight, facing a FLAT WALL square-on 1.6-4.0 m
+Speed map: place the car on the floor, wheels straight, facing a FLAT WALL square-on 1.5-4.0 m
 away, nothing in between, ~1.3 m free behind. It drives ~0.7 m toward the wall and back at 7
 speeds (slow to ~0.5 m/s real), about 2 minutes. Stops by itself if anything gets within 45 cm.
 EOF
