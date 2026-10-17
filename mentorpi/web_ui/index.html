@@ -158,7 +158,7 @@
   /* Canvases */
   canvas { width: 100%; display: block; background: var(--canvas); border-radius: 8px; }
   #lidar { aspect-ratio: 4 / 3; }
-  #attitude { aspect-ratio: 5 / 2; }
+  #attitude { aspect-ratio: 2.38 / 1; }   /* IMU panel = Drive panel height at 1680 px */
   #trail { aspect-ratio: 2 / 1; }
   select { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 6px;
     font: inherit; font-size: 12px; padding: 2px 6px; }
@@ -167,6 +167,11 @@
   .readout div { background: var(--panel-2); border-radius: 6px; padding: 2px 6px; }
   .readout .k { color: var(--muted); font-size: 10px; }
   .readout .v { font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+  .readout.row7 { grid-template-columns: repeat(7, minmax(0, 1fr)); }   /* IMU: all in one row */
+  .readout.row7 > div { padding: 2px 5px; min-width: 0; overflow: hidden; }
+  .readout .k .u { opacity: .75; }
+  .readout.row7 .k { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  @media (max-width: 900px) { .readout.row7 { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
 
   /* System */
   .sys { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 4px; }
@@ -290,14 +295,14 @@
   <section class="panel" id="imuPanel">
     <h2>IMU</h2>
     <canvas id="attitude"></canvas>
-    <div class="readout">
+    <div class="readout row7">
       <div><div class="k">Roll</div><div class="v" id="iRoll">--</div></div>
       <div><div class="k">Pitch</div><div class="v" id="iPitch">--</div></div>
       <div><div class="k" title="From the EKF (/odom): gyro turn rate, frozen while parked">Heading</div><div class="v" id="iYaw">--</div></div>
-      <div><div class="k">Gyro z</div><div class="v" id="iGz">--</div></div>
-      <div><div class="k">Accel x</div><div class="v" id="iAx">--</div></div>
-      <div><div class="k">Accel y</div><div class="v" id="iAy">--</div></div>
-      <div><div class="k">Accel z</div><div class="v" id="iAz">--</div></div>
+      <div><div class="k">Gyro z <span class="u">°/s</span></div><div class="v" id="iGz">--</div></div>
+      <div><div class="k" title="Acceleration x, m/s²">Acc x <span class="u">m/s²</span></div><div class="v" id="iAx">--</div></div>
+      <div><div class="k" title="Acceleration y, m/s²">Acc y <span class="u">m/s²</span></div><div class="v" id="iAy">--</div></div>
+      <div><div class="k" title="Acceleration z, m/s²">Acc z <span class="u">m/s²</span></div><div class="v" id="iAz">--</div></div>
     </div>
   </section>
   <section class="panel" id="odomPanel">
@@ -750,13 +755,13 @@ ros.subscribe('/imu/rpy/filtered', 'geometry_msgs/msg/Vector3Stamped', msg => {
 }, 100);
 ros.subscribe('/imu', 'sensor_msgs/msg/Imu', msg => {
   const a = msg.linear_acceleration;
-  $('iAx').textContent = fmt(a.x) + ' m/s²';
-  $('iAy').textContent = fmt(a.y) + ' m/s²';
-  $('iAz').textContent = fmt(a.z) + ' m/s²';
+  $('iAx').textContent = fmt(a.x);
+  $('iAy').textContent = fmt(a.y);
+  $('iAz').textContent = fmt(a.z);
   touch('imu', `${fmt(Math.hypot(a.x, a.y, a.z), 1)} m/s²`);
 }, 100);
 ros.subscribe('/imu_corrected', 'sensor_msgs/msg/Imu', msg => {
-  $('iGz').textContent = deg(msg.angular_velocity.z).toFixed(1) + '°/s';
+  $('iGz').textContent = deg(msg.angular_velocity.z).toFixed(1);
 }, 100);
 
 function drawAttitude() {
