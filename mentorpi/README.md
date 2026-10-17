@@ -223,10 +223,13 @@ How odometry works here: there is **no wheel-encoder feedback**. `odom_publisher
 with the IMU heading into `/odom` (the web UI trail). So distances follow the command (wrong if the
 wheels slip or the car is slower than asked), turns follow the gyro.
 
-`motor_speed_factor` (real speed / commanded speed, default 1.0) corrects the motors: car 1
-measured **2.29**, i.e. it drove 2.3x faster than commanded (the board's motor-type setting does not
-match the fitted motors). Motor commands are divided by it, so a commanded speed is the real speed
-and speed limits mean what they say. `angular_correction_factor` scales the odometry turn rate
+`motor_speed_map` ([real, sent, ...] m/s, measured by `speedmap`) corrects the motor commands so a
+commanded speed is the real speed and speed limits mean what they say (car 2: real = 0.89-0.98 x
+sent). The motors (JGA27-310R, 20:1, 450 RPM) have encoders and the board runs a speed loop; car 1
+runs away above ~0.12 m/s sent (suspected encoder wiring), so its map only covers slow speeds.
+Fallback without a map: `motor_speed_factor` (real / commanded). Steering centre: the board's PWM
+servo offset, per car in `calibration/servo_config.yaml` (key 3 = steering, us, -100..100), loaded
+at controller start; `steer` measures the heading drift per metre with the IMU and sets it. `angular_correction_factor` scales the odometry turn rate
 (`linear_correction_factor` stays 1.0 once the motor factor is set). In the factory code the
 correction factors had no effect on `/odom`; `system/patch_odom.py` fixes both at container start.
 Measure them with the lidar and IMU as references, **linear first; the car drives at 0.2 m/s, on
@@ -234,7 +237,9 @@ the floor only (never on a table: the lidar can't see the edge)**:
 
 ```bash
 ~/mentorpi/calibrate_odom.sh check     # no driving: is the car placed right?
-~/mentorpi/calibrate_odom.sh linear    # facing a flat wall 1-4 m ahead, 1.3 m free behind -> motor_speed_factor
+~/mentorpi/calibrate_odom.sh speedmap  # facing a flat wall 1.5-4 m ahead, 1.3 m free behind -> motor_speed_map
+~/mentorpi/calibrate_odom.sh steer     # same placement: steering centre trim (calibration/servo_config.yaml)
+~/mentorpi/calibrate_odom.sh linear    # check: with a speed map the ratio should be ~1.00
 ~/mentorpi/calibrate_odom.sh angular   # ~1.2 m clear all around: one left + one right circle
 ```
 

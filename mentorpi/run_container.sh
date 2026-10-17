@@ -56,6 +56,7 @@ docker run -d \
     -v "$DIR/calibration/calibrate_params.yaml:/home/ubuntu/ros2_ws/src/driver/controller/config/calibrate_params.yaml" \
     -v "$DIR/calibration/imu_calib.yaml:$WS_SHARE/calibration/share/calibration/config/imu_calib.yaml" \
     -v "$DIR/calibration/calibrate_params.yaml:$WS_SHARE/controller/share/controller/config/calibrate_params.yaml" \
+    -v "$DIR/calibration/servo_config.yaml:/home/ubuntu/software/Servo_upper_computer/servo_config.yaml" \
     "${IMAGE}" \
     tail -f /dev/null >/dev/null
 

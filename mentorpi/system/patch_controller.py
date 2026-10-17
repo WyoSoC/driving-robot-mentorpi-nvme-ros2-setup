@@ -40,6 +40,9 @@ replacements = [
                 data.extend([[PWM_PORT_MAP.get(i.id[0], i.id[0]), i.position[0]]])
             if i.id and i.offset:
                 self.board.pwm_servo_set_offset(PWM_PORT_MAP.get(i.id[0], i.id[0]), i.offset[0])"""),
+    # 3. servo offsets (calibration/servo_config.yaml, key = logical id; 3 = steering) to the right port
+    ("""                    self.board.pwm_servo_set_offset(servo_id, offset)""",
+     """                    self.board.pwm_servo_set_offset(PWM_PORT_MAP.get(servo_id, servo_id), offset)"""),
     # 2. harmless get_pwm_servo_state
     ("""    def get_pwm_servo_state(self, msg):
         states = []""",

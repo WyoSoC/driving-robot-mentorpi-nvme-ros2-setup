@@ -78,7 +78,7 @@ grep -E '^(CAR_NAME|ROS_DOMAIN_ID|WEB_UI_PORT)=' "$DIR/car.env" | sed 's/^/    /
 
 step "Calibration"
 mkdir -p "$DIR/calibration"
-for f in imu_calib.yaml calibrate_params.yaml; do
+for f in imu_calib.yaml calibrate_params.yaml servo_config.yaml; do
     if [ -f "$DIR/calibration/$f" ]; then
         ok "keeping calibration/$f"
     else

@@ -10,6 +10,8 @@ and how much the car really moved:
   angular  drive a left and a right circle: IMU yaw change vs /odom_raw yaw change
   speedmap drive back and forth toward a flat wall at several motor speeds; the lidar measures the
            real speed of each (the motors have no speed feedback and respond non-linearly)
+  steer    drive straight toward a flat wall and back at 0.1 m/s: IMU heading change per metre ->
+           steering centre trim (servo offset, us) that makes "straight" straight
   check    no driving: show what the car sees and whether it is ready
 
 Prints "RESULT motor_speed_map=real,sent,..." (speedmap), "RESULT motor_speed_factor=..." (linear: real speed / commanded speed; the controller divides
@@ -35,6 +37,8 @@ from sensor_msgs.msg import Imu, LaserScan
 MODE = sys.argv[1]
 CUR_LIN, CUR_ANG = float(sys.argv[2]), float(sys.argv[3])
 CUR_MOTOR = float(sys.argv[4]) if len(sys.argv) > 4 else 1.0
+CUR_TRIM = int(float(sys.argv[5])) if len(sys.argv) > 5 else 0   # steering servo offset, us
+WHEELBASE = 0.145           # m, controller/ackermann.py
 SPEED = 0.2                 # m/s
 STEER = math.radians(20)    # circle steering angle (radius ~0.4 m)
 WALL_MIN, WALL_MAX = 1.0, 4.0
@@ -299,6 +303,56 @@ class Calib:
         flat = ','.join(f'{r:.4f},{s:.4f}' for r, s in pts)
         print(f'RESULT motor_speed_map={flat}')
 
+    # ---- steering centre -----------------------------------------------------
+    def straight_yaw(self, direction, target, speed=0.1):
+        """Drive straight until the wall ahead is at `target` m. Return (metres moved, yaw change)."""
+        d0 = self.averaged(lambda: self.sector(0), 1.0)
+        y0 = self.imu_yaw
+        t0 = time.time()
+        while True:
+            f = self.sector(0)
+            if f is not None and ((f <= target) if direction > 0 else (f >= target)):
+                break
+            g = self.guard(direction)
+            if g is not None and g < (STOP_FRONT if direction > 0 else STOP_BACK):
+                self.stop()
+                sys.exit(f'stopped: obstacle {g:.2f} m {"ahead" if direction > 0 else "behind"}')
+            if time.time() - t0 > 15:
+                self.stop()
+                sys.exit('stopped: timeout (is the car moving?)')
+            self.drive(direction * speed)
+            time.sleep(0.05)
+        self.stop()
+        time.sleep(1.5)
+        d1 = self.averaged(lambda: self.sector(0), 1.0)
+        dyaw = wrap(self.imu_yaw - y0)
+        moved = abs(d1 - d0)
+        print(f'  {"forward" if direction > 0 else "back   "}: moved {moved:.2f} m, heading changed '
+              f'{math.degrees(dyaw):+.1f} deg ({math.degrees(dyaw) / max(moved, 0.01):+.1f} deg/m)', flush=True)
+        return moved, dyaw
+
+    def steer(self):
+        home = self.averaged(lambda: self.sector(0))
+        if home is None or not 1.5 <= home <= WALL_MAX:
+            sys.exit(f'need a flat wall straight ahead 1.5-{WALL_MAX} m away (lidar sees {home})')
+        behind = self.guard(-1)
+        if behind is not None and behind < 1.0:
+            sys.exit(f'something is {behind:.2f} m behind the car; needs ~1.3 m free behind')
+        ks = []
+        for _ in range(2):
+            m1, y1 = self.straight_yaw(+1, home - 0.7)
+            m2, y2 = self.straight_yaw(-1, home)
+            ks += [y1 / max(m1, 0.05), -y2 / max(m2, 0.05)]   # path curvature, rad/m (+ = curves left)
+        k = statistics.fmean(ks)
+        delta = math.degrees(math.atan(WHEELBASE * k))       # steering angle the car actually has
+        us = 2000 * delta / 180                               # ackermann.py: 1500 + 2000*deg/180
+        new = int(round(max(-100, min(100, CUR_TRIM - us))))
+        print(f'  curvature {math.degrees(k):+.1f} deg/m (passes: {" ".join(f"{math.degrees(x):+.1f}" for x in ks)}) '
+              f'= steering {delta:+.2f} deg off centre ({"left" if delta > 0 else "right"})', flush=True)
+        if abs(us) < 2:
+            print('  steering centre is good (< 2 us off)', flush=True)
+        print(f'RESULT steer_trim_us={new}  (current {CUR_TRIM}, change {new - CUR_TRIM:+d})')
+
     # ---- angular -------------------------------------------------------------
     def circle(self, steer):
         imu_prev, odo_prev = self.imu_yaw, yaw_of(self.odom.pose.pose.orientation)
@@ -353,7 +407,8 @@ def main():
         signal.signal(sig, lambda *_: (c.stop(), sys.exit(130)))
     try:
         c.wait_ready()
-        {'check': c.check, 'linear': c.linear, 'angular': c.angular, 'speedmap': c.speedmap}[MODE]()
+        {'check': c.check, 'linear': c.linear, 'angular': c.angular, 'speedmap': c.speedmap,
+         'steer': c.steer}[MODE]()
     finally:
         c.stop()
         rclpy.try_shutdown()
