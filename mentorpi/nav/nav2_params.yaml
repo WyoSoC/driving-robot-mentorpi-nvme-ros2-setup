@@ -59,8 +59,9 @@ bt_navigator:
     global_frame: map
     robot_base_frame: base_footprint
     odom_topic: /odom
-    bt_loop_duration: 10
-    default_server_timeout: 20
+    bt_loop_duration: 20             # ms per tick (was 10: 'tick rate exceeded' on the Pi)
+    default_server_timeout: 500      # ms for a server to accept a request (was 20: under load every
+                                     # planner / wait / backup request timed out and goals failed at once)
     default_nav_to_pose_bt_xml: /home/ubuntu/nav/navigate_ackermann.xml
     default_nav_through_poses_bt_xml: /home/ubuntu/nav/navigate_through_poses_ackermann.xml
     plugin_lib_names:
@@ -343,12 +344,14 @@ collision_monitor:
     cmd_vel_in_topic: /nav/cmd_vel_smoothed
     cmd_vel_out_topic: /nav/cmd_vel
     transform_tolerance: 0.5
-    source_timeout: 1.0          # no lidar for 1 s -> stop
+    source_timeout: 2.0          # older data is ignored (1.0 dropped the camera during short stalls)
     stop_pub_timeout: 2.0
     polygons: ["StopZone", "FootprintApproach"]
-    StopZone:                    # anything right next to the car: stop
-      type: "polygon"
-      points: [0.20, 0.13, 0.20, -0.13, -0.18, -0.13, -0.18, 0.13]
+    StopZone:                    # anything just in front of the bumper (front at x = 0.13): stop.
+      type: "polygon"            # Front only: Humble's zones ignore the driving direction, and a zone round
+      points: [0.20, 0.13, 0.20, -0.13, 0.12, -0.13, 0.12, 0.13]   # the whole car let a cable 5 cm
+                                 # behind it block driving forward. FootprintApproach (simulated motion,
+                                 # forward and reverse) guards the direction the car actually moves.
       action_type: "stop"
       max_points: 3
       visualize: true
