@@ -8,11 +8,13 @@ effect on /odom, the web UI trail or SLAM.
 Fix: scale the commanded speed and turn rate by the factors inside the odometry loop (the
 velocities the EKF uses, and the integrated position).
 
-Second fix: the motors ran ~2.3x faster than commanded (car 1, lidar-measured; the board's motor
-type setting does not match the fitted motors). New parameter motor_speed_factor = real speed /
-commanded speed, measured by calibrate_odom.sh linear; motor commands are divided by it so a
-commanded speed is the real speed (speed limits mean something). Speed and turn rate are scaled
-together, so the steering angle does not change.
+Second fix: real speed does not follow the command (car 1, lidar-measured: 0.2 m/s commanded ->
+0.46 m/s real, 0.087 -> 0.08; the motors have no speed feedback, so the response is non-linear).
+New parameter motor_speed_map = [real0, sent0, real1, sent1, ...] (m/s, increasing), measured by
+calibrate_odom.sh speedmap: the speed to send for a wanted real speed is interpolated from it, so a
+commanded speed is the real speed and speed limits mean something. Fallback without a map:
+motor_speed_factor (real / commanded, default 1.0). Speed and turn rate are scaled together, so the
+steering angle does not change.
 
 Run by run_container.sh: python3 patch_odom.py [FILE]
 """
@@ -49,17 +51,38 @@ replacements = [
 replacements += [
     ("""        self.declare_parameter('angular_correction_factor', 1.00)""",
      """        self.declare_parameter('angular_correction_factor', 1.00)
-        self.declare_parameter('motor_speed_factor', 1.00)  # mentorpi patch: real / commanded speed"""),
+        self.declare_parameter('motor_speed_factor', 1.00)  # mentorpi patch: real / commanded speed
+        self.declare_parameter('motor_speed_map', [0.0])     # mentorpi patch: [real, sent, ...]"""),
     ("""        self.angular_factor = self.get_parameter('angular_correction_factor').value""",
      """        self.angular_factor = self.get_parameter('angular_correction_factor').value
         self.motor_factor = self.get_parameter('motor_speed_factor').value or 1.0
-        self.get_logger().info(f'motor_speed_factor {self.motor_factor} (mentorpi patch)')"""),
+        m = list(self.get_parameter('motor_speed_map').value or [])
+        self.motor_map = [(m[i], m[i + 1]) for i in range(0, len(m) - 1, 2)] if len(m) >= 4 else []
+        self.get_logger().info(f'motor_speed_factor {self.motor_factor}, motor_speed_map {self.motor_map} (mentorpi patch)')"""),
+    ("""    def cmd_vel_callback(self, msg):""",
+     """    def motor_scale(self, v):
+        # mentorpi patch: sent / wanted speed ratio for a wanted real speed v
+        v = abs(v)
+        if v < 1e-6:
+            return 1.0
+        pts = self.motor_map
+        if not pts:
+            return 1.0 / self.motor_factor
+        if v <= pts[0][0]:                       # below the slowest measured point: same ratio
+            return pts[0][1] / pts[0][0]
+        for (r0, s0), (r1, s1) in zip(pts, pts[1:]):
+            if v <= r1:
+                return (s0 + (s1 - s0) * (v - r0) / (r1 - r0)) / v
+        return pts[-1][1] / pts[-1][0]           # above the fastest: same ratio
+
+    def cmd_vel_callback(self, msg):"""),
     ("""\n            speeds = self.ackermann.set_velocity(self.linear_x, self.angular_z)""",
-     """\n            speeds = self.ackermann.set_velocity(self.linear_x / self.motor_factor, self.angular_z / self.motor_factor)"""),
+     """\n            k = self.motor_scale(self.linear_x)
+            speeds = self.ackermann.set_velocity(self.linear_x * k, self.angular_z * k)"""),
 ]
 for old, new in replacements:
     if src.count(old) != 1:
         sys.exit(f"patch_odom: factory code changed, cannot apply patch:\n{old}")
     src = src.replace(old, new)
 open(FILE, "w").write(src)
-print("odom_publisher patched: correction factors on /odom_raw velocities, motor_speed_factor on motor commands")
+print("odom_publisher patched: correction factors on /odom_raw velocities, motor speed map on motor commands")

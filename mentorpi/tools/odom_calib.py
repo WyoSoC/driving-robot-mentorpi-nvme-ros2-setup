@@ -8,9 +8,11 @@ and how much the car really moved:
   linear   drive straight toward a flat wall: lidar distance change vs /odom_raw distance,
            forward then back again (2 samples)
   angular  drive a left and a right circle: IMU yaw change vs /odom_raw yaw change
+  speedmap drive back and forth toward a flat wall at several motor speeds; the lidar measures the
+           real speed of each (the motors have no speed feedback and respond non-linearly)
   check    no driving: show what the car sees and whether it is ready
 
-Prints "RESULT motor_speed_factor=..." (linear: real speed / commanded speed; the controller divides
+Prints "RESULT motor_speed_map=real,sent,..." (speedmap), "RESULT motor_speed_factor=..." (linear: real speed / commanded speed; the controller divides
 motor commands by it, so commanded = real and /odom_raw needs no linear correction) or
 "RESULT angular_correction_factor=..." (new values = current value x measured ratio). Drives at 0.2 m/s; stops if something is too close, on timeout,
 on Ctrl+C and on exit.
@@ -174,6 +176,72 @@ class Calib:
             print(f'  NOTE: linear_correction_factor is {CUR_LIN}; the result assumes odometry = commanded speed', flush=True)
         print(f'RESULT motor_speed_factor={CUR_MOTOR * r:.4f}  (current {CUR_MOTOR}, measured ratio {r:.4f})')
 
+    # ---- speed map -----------------------------------------------------------
+    def scan_front(self):
+        """(stamp, median range straight ahead) of the latest scan."""
+        with self.lock:
+            m = self.scan
+        if m is None:
+            return None
+        st = m.header.stamp.sec + m.header.stamp.nanosec * 1e-9
+        return st, self.sector(0)
+
+    def run_at(self, sent, direction, dist=0.7):
+        """Drive at motor speed `sent` (m/s as the factory code understands it). Return the real
+        steady speed in m/s (lidar range rate after the first second), 0 if it barely moved."""
+        d0 = self.averaged(lambda: self.sector(0), 1.0)
+        if d0 is None:
+            sys.exit('no lidar return straight ahead')
+        samples, seen, t0 = [], set(), time.time()
+        while True:
+            el = time.time() - t0
+            f = self.scan_front()
+            if f and f[1] is not None and f[0] not in seen:
+                seen.add(f[0])
+                samples.append((f[0], f[1]))
+                if abs(f[1] - d0) >= dist:
+                    break
+            guard = self.sector(0, 15) if direction > 0 else self.sector(180, 15)
+            if guard is not None and guard < (STOP_FRONT if direction > 0 else 0.4):
+                self.stop()
+                sys.exit(f'stopped: obstacle {guard:.2f} m {"ahead" if direction > 0 else "behind"}')
+            if el > 10:
+                break
+            self.drive(direction * sent)
+            time.sleep(0.05)
+        self.stop()
+        time.sleep(1.0)
+        if len(samples) < 4:
+            return 0.0
+        ts = samples[0][0]
+        late = [(s - ts, r) for s, r in samples if s - ts >= 1.0] or [(s - ts, r) for s, r in samples]
+        if len(late) < 3:
+            late = [(s - ts, r) for s, r in samples[len(samples) // 2:]]
+        n = len(late); mt = sum(a for a, _ in late) / n; mr = sum(b for _, b in late) / n
+        den = sum((a - mt) ** 2 for a, _ in late)
+        v = abs(sum((a - mt) * (b - mr) for a, b in late) / den) if den > 0 else 0.0
+        moved = abs(samples[-1][1] - d0)
+        print(f'    sent {sent:.3f} {"fwd" if direction > 0 else "back"}: real {v:.3f} m/s, moved {moved:.2f} m', flush=True)
+        return v if moved > 0.05 else 0.0
+
+    def speedmap(self):
+        d = self.averaged(lambda: self.sector(0))
+        if d is None or not 1.6 <= d <= WALL_MAX:
+            sys.exit(f'need a flat wall straight ahead 1.6-{WALL_MAX} m away (lidar sees {d})')
+        pts = []
+        for sent in (0.05, 0.07, 0.09, 0.11, 0.13, 0.16, 0.20):
+            ahead = self.averaged(lambda: self.sector(0), 0.5)
+            if ahead is not None and ahead - 0.7 < STOP_FRONT + 0.15:
+                sys.exit(f'wall too close ({ahead:.2f} m) to continue')
+            v = (self.run_at(sent, +1) + self.run_at(sent, -1)) / 2
+            print(f'  sent {sent:.3f} m/s -> real {v:.3f} m/s (ratio {v / sent:.2f})', flush=True)
+            if v > 0.02 and (not pts or v > pts[-1][0] + 0.005):
+                pts.append((v, sent))
+        if len(pts) < 2:
+            sys.exit('car hardly moved at any speed; nothing measured')
+        flat = ','.join(f'{r:.4f},{s:.4f}' for r, s in pts)
+        print(f'RESULT motor_speed_map={flat}')
+
     # ---- angular -------------------------------------------------------------
     def circle(self, steer):
         imu_prev, odo_prev = self.imu_yaw, yaw_of(self.odom.pose.pose.orientation)
@@ -228,7 +296,7 @@ def main():
         signal.signal(sig, lambda *_: (c.stop(), sys.exit(130)))
     try:
         c.wait_ready()
-        {'check': c.check, 'linear': c.linear, 'angular': c.angular}[MODE]()
+        {'check': c.check, 'linear': c.linear, 'angular': c.angular, 'speedmap': c.speedmap}[MODE]()
     finally:
         c.stop()
         rclpy.try_shutdown()

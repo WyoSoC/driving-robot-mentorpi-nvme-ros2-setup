@@ -70,4 +70,4 @@ for i in $(seq 60); do
 done
 echo "Put the car flat on its wheels. Corrected reading should be about x=0, y=0, z=9.81:"
 sleep 3
-docker exec -u ubuntu "$CONTAINER" /bin/zsh -c 'source ~/.zshrc >/dev/null 2>&1; timeout 10 ros2 topic echo --once /imu_corrected --field linear_acceleration'
+docker exec -u ubuntu "$CONTAINER" /bin/zsh -c 'source ~/.zshrc >/dev/null 2>&1; timeout -k 2 10 ros2 topic echo --once /imu_corrected --field linear_acceleration'

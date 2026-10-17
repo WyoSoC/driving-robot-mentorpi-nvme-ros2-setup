@@ -25,11 +25,11 @@ docker exec -u ubuntu MentorPi /bin/zsh -c '
 source ~/.zshrc >/dev/null 2>&1
 echo "  ROS nodes: $(ros2 node list 2>/dev/null | wc -l)"
 for t in /odom /imu /scan_raw /ascamera/camera_publisher/rgb0/image; do
-    r=$(timeout 6 ros2 topic hz $t 2>/dev/null | grep -m1 "average rate" | awk "{print \$3}")
+    r=$(timeout -k 2 6 ros2 topic hz $t 2>/dev/null | grep -m1 "average rate" | awk "{print \$3}")
     [ -n "$r" ] && r="$r Hz" || r="NO DATA"
     printf "  %-42s %s\n" $t "$r"
 done
-b=$(timeout 6 ros2 topic echo --once --field data /ros_robot_controller/battery 2>/dev/null | head -1)
+b=$(timeout -k 2 6 ros2 topic echo --once --field data /ros_robot_controller/battery 2>/dev/null | head -1)
 echo "  battery: ${b:-?} mV"'
 
 echo; echo "-- web"
