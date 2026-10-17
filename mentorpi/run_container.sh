@@ -72,6 +72,8 @@ docker exec -i -u ubuntu -e BATTERY_ALARM_MV="${BATTERY_ALARM_MV:-6600}" "${CONT
 
 # Odometry correction factors (calibration/calibrate_params.yaml) on the velocities the EKF uses.
 docker exec -i -u ubuntu "${CONTAINER_NAME}" python3 - < "$DIR/system/patch_odom.py"
+# EKF heading from the gyro turn rate (/imu_corrected), not imu_complementary_filter (system/patch_ekf.py).
+docker exec -i -u ubuntu "${CONTAINER_NAME}" python3 - < "$DIR/system/patch_ekf.py"
 
 # rosbridge leak when a browser disconnects mid-setup (see system/patch_rosbridge.py).
 docker exec -i "${CONTAINER_NAME}" python3 - < "$DIR/system/patch_rosbridge.py"

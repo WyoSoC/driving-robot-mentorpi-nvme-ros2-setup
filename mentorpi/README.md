@@ -226,10 +226,15 @@ whole controller node (no IMU, battery or motors until bringup restarted).
 
 ### Odometry: `calibrate_params.yaml`
 
-How odometry works here: there is **no wheel-encoder feedback**. `odom_publisher` integrates the
-*commanded* speed and steering into `/odom_raw`; the EKF (`ekf_filter_node`) fuses its velocities
-with the IMU heading into `/odom` (the web UI trail). So distances follow the command (wrong if the
-wheels slip or the car is slower than asked), turns follow the gyro.
+How odometry works here: the motors have encoders, but only the board uses them (speed loop);
+ROS gets no wheel feedback. `odom_publisher` integrates the *commanded* speed and steering into
+`/odom_raw` (made accurate by the speed map and steering calibration below). The EKF
+(`ekf_filter_node`) takes the speed from `/odom_raw` and the **turn rate from the gyro**
+(`/imu_corrected`, bias removed at start-up); its output `/odom` is the web UI trail and SLAM's
+odometry. `system/patch_ekf.py` sets this up: the factory config used the heading of
+`imu_complementary_filter` (`/imu`), which swallows slow turns (it re-estimates the gyro bias
+whenever turning < 11 deg/s) and came out mirrored in the EKF (car 1 turned 90 deg left by hand:
+gyro +89, /imu +41, /odom -41). While parked, `/odom_raw` pins the turn rate to 0.
 
 `motor_speed_map` ([real, sent, ...] m/s, measured by `speedmap`) corrects the motor commands so a
 commanded speed is the real speed and speed limits mean what they say (both cars: real = 0.89-0.98 x
