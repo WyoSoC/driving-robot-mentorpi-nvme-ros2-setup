@@ -83,6 +83,11 @@ Manual start without systemd (in this order):
 - **Battery warnings**: the page shows "low" below 6.9 V and "critical" below 6.6 V. The board's own
   (loud) beeper only sounds below 6.6 V (factory: 6.9 V, which beeps at ~35% under load); set
   `BATTERY_ALARM_MV=...` in `car.env` to change it per car (6000-7400), then restart the container.
+- **Charging mode** (button next to the battery): stops camera, lidar, mapping and driving so more of
+  the charger's ~2 A goes into the battery (~1.5x faster than charging with everything running;
+  switched off is fastest). The page and battery reading stay on; "Resume normal mode" restarts the
+  robot software (~30 s). Manual only: a reboot or container restart always comes up normal.
+  From a shell: `sudo ~/mentorpi/system/charging_mode.sh on|off|status`.
 - **Safety**: the page stops the car when you let go of the controls, switch tabs or lose
   the connection. On the robot, `web_ui_server.py` also stops the car if no command arrives
   for 0.5 s while moving (e.g. Wi-Fi drop), and caps speed at 0.7 m/s and steering at 40°.

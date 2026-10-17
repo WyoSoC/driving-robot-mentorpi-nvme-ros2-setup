@@ -14,6 +14,10 @@ charger flag. So everything here is inferred from the voltage trend:
   (charger pushes it up) and the last ~15 min are a constant-voltage top-off the voltage
   can't show, so a fixed allowance is added.
 
+Charging mode (manual, from the web page): the robot software is stopped and the user said the
+charger is in, so the state is "charging" outright; the trend restarts when the mode changes (the
+voltage jumps when the load drops) and gives the time to full once there is enough data.
+
 Pure Python (no ROS) so it can be tested off the robot: python3 battery_estimator.py
 """
 import statistics
@@ -53,6 +57,14 @@ class BatteryEstimator:
         self.bins = []         # (t_mid, median volts)
         self.last_drive = -1e9
         self.last_t = None
+        self.charging_mode = False
+
+    def set_charging_mode(self, on):
+        """Manual charging mode from the web page; restarts the trend when it changes."""
+        on = bool(on)
+        if on != self.charging_mode:
+            self.charging_mode = on
+            self.raw, self.bins = [], []
 
     def driving(self, t):
         self.last_drive = t
@@ -76,8 +88,12 @@ class BatteryEstimator:
                "level": "critical" if volts < CRITICAL_V else "low" if volts < LOW_V else "ok"}
         b = self.bins
         span = b[-1][0] - b[0][0] if len(b) >= 2 else 0
+        if self.charging_mode:
+            out["mode"] = "charging"
         if len(b) < 5 or span < MIN_SPAN_S:
             out["collecting_s"] = round(max(0, MIN_SPAN_S - span))
+            if self.charging_mode:
+                out["state"] = "charging"         # eta follows once the trend is known
             return out
         xs = [(x[0] - b[0][0]) / 60 for x in b]            # minutes
         ys = [soc_from_voltage(x[1]) for x in b]
@@ -86,6 +102,11 @@ class BatteryEstimator:
         out["rate"] = round(rate, 3)                         # %/min
         if volts >= FULL_V and rate > USING_RATE:
             out["state"] = "full"
+        elif self.charging_mode:
+            out["state"] = "charging"
+            if rate > 0.01:
+                out["eta_min"] = round((100 - soc) / rate + TOPOFF_MIN)
+                out["eta_kind"] = "full"
         elif rate > CHARGING_RATE:
             out["state"] = "charging"
             out["eta_min"] = round((100 - soc) / rate + TOPOFF_MIN)
@@ -133,4 +154,15 @@ if __name__ == "__main__":
     assert n["state"] == "collecting"
     low = _simulate("low battery 6.8 V, discharging", lambda m: 7.0 - 0.02 * m, 10)
     assert low["level"] == "low"
+    e = BatteryEstimator()
+    e.set_charging_mode(True)
+    for s in range(15 * 60):
+        e.add(float(s), 7.2 + 0.3 * s / 3600)               # slow rise: 0.3 V/h
+    cm = e.status(7.275)
+    print(f"{'charging mode, slow rise, 15 min':42s} {cm}")
+    assert cm["state"] == "charging" and cm["eta_kind"] == "full" and cm["mode"] == "charging"
+    e2 = BatteryEstimator()
+    e2.set_charging_mode(True)
+    cm2 = e2.status(7.2)
+    assert cm2["state"] == "charging" and cm2["eta_min"] is None
     print("all checks passed")

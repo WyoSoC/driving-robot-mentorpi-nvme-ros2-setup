@@ -9,6 +9,9 @@
   16-bit depth image as MJPEG. Only runs while someone is watching.
 - Publishes /web/battery_status (std_msgs/String, JSON, 1 Hz): charge %, charging /
   in use / steady, time to empty or full. See battery_estimator.py.
+- Charging mode (manual): GET /api/charging -> {"mode": "on" | "switching" | "off"},
+  POST /api/charging?on=1|0 writes state/charging_request; the host (system/charging_mode.sh via
+  mentorpi-charging.path) stops / restarts the robot software. This server keeps running.
 - SLAM (slam_manager.py): GET /api/slam (status, pose, path), GET /api/slam/map.png,
   POST /api/slam/start | /api/slam/stop | /api/slam/save?name=NAME
 
@@ -52,6 +55,7 @@ DEPTH_PERIOD = 0.1            # s, colorize at most 10 Hz
 
 BATTERY_TOPIC = '/ros_robot_controller/battery'   # UInt16, mV, ~1 Hz
 DRIVING_SPEED = 0.02          # m/s from /odom; above -> motors loaded, voltage sags
+STATE_DIR = '/home/ubuntu/mentorpi_state'   # host mentorpi/state/ (run_container.sh)
 
 
 def clamp(value, limit):
@@ -79,8 +83,27 @@ class WebBridge(Node):
         self.create_subscription(UInt16, BATTERY_TOPIC, self.on_battery, 10)
         self.create_subscription(Odometry, '/odom', self.on_odom, 10)
         self.create_timer(1.0, self.publish_battery)
+        self.charging = 'off'
+        self.create_timer(1.0, self.read_charging_mode)
 
         self.slam = SlamManager(self)
+
+    def read_charging_mode(self):
+        try:
+            with open(os.path.join(STATE_DIR, 'charging')) as f:
+                self.charging = f.read().strip() or 'switching'
+        except FileNotFoundError:
+            self.charging = 'off'
+        except OSError:
+            pass
+        self.battery.set_charging_mode(self.charging == 'on')
+
+    def request_charging(self, on):
+        if self.slam.running():
+            self.slam.stop()
+        with open(os.path.join(STATE_DIR, 'charging_request'), 'w') as f:
+            f.write('on\n' if on else 'off\n')
+        self.get_logger().info(f'charging mode {"on" if on else "off"} requested')
 
     def on_cmd(self, msg):
         out = Twist()
@@ -147,6 +170,8 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         url = urllib.parse.urlparse(self.path)
         slam = self.node.slam
+        if url.path == '/api/charging':
+            return self._send(200, {'mode': self.node.charging})
         if url.path == '/api/slam':
             q = urllib.parse.parse_qs(url.query)
             return self._send(200, slam.status(int(q.get('since', ['0'])[0] or 0)))
@@ -158,6 +183,15 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         url = urllib.parse.urlparse(self.path)
         slam = self.node.slam
+        if url.path == '/api/charging':
+            on = urllib.parse.parse_qs(url.query).get('on', [''])[0]
+            if on not in ('0', '1'):
+                return self._send(400, {'ok': False, 'message': 'on=1 or on=0'})
+            try:
+                self.node.request_charging(on == '1')
+            except OSError as exc:
+                return self._send(500, {'ok': False, 'message': f'cannot write request: {exc}'})
+            return self._send(200, {'ok': True})
         if url.path == '/api/slam/start':
             return self._send(200, {'ok': True, 'message': slam.start()})
         if url.path == '/api/slam/stop':

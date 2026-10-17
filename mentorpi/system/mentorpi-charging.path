@@ -1,0 +1,9 @@
+[Unit]
+Description=MentorPi charging-mode requests from the web UI
+
+[Path]
+PathModified=@DIR@/state/charging_request
+Unit=mentorpi-charging.service
+
+[Install]
+WantedBy=multi-user.target

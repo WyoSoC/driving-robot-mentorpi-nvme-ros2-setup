@@ -1,0 +1,7 @@
+[Unit]
+Description=MentorPi charging mode (switch on/off as requested by the web UI)
+After=mentorpi-container.service
+
+[Service]
+Type=oneshot
+ExecStart=@DIR@/system/charging_mode.sh apply

@@ -42,6 +42,11 @@
   .pill.batt-low { color: var(--warn); border-color: var(--warn); }
   .pill.batt-critical { color: #fff; background: var(--bad); border-color: var(--bad); }
   .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); }
+  #chargeBtn { padding: 4px 10px; font-size: 12px; border-radius: 999px; }
+  .banner { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: -4px 0 16px;
+    padding: 10px 14px; border-radius: 10px; border: 1px solid var(--ok); color: var(--text);
+    background: rgba(63,185,80,.10); font-size: 14px; }
+  .banner[hidden] { display: none; }
   .spacer { flex: 1; }
 
   .estop { border: 0; border-radius: 10px; padding: 10px 18px; font-weight: 700; font-size: 14px;
@@ -107,6 +112,7 @@
   .btn { border: 1px solid var(--line); background: var(--panel-2); color: var(--text);
     padding: 7px 12px; border-radius: 8px; font: inherit; font-size: 13px; cursor: pointer; }
   .btn:hover { border-color: var(--muted); }
+  .btn:disabled { opacity: .5; cursor: default; }
   .hint { color: var(--muted); font-size: 12px; margin-top: 8px; }
   kbd { font-family: var(--mono); font-size: 11px; background: var(--panel-2); border: 1px solid var(--line);
     border-radius: 4px; padding: 1px 5px; }
@@ -146,9 +152,16 @@
   <h1>MentorPi <span>· web control</span></h1>
   <span class="pill"><span class="dot" id="connDot"></span><span id="connText">Connecting…</span></span>
   <span class="pill" id="battPill" title="Battery">🔋 <span id="battText">--</span></span>
+  <button class="btn" id="chargeBtn" title="Stop camera, lidar, mapping and driving so the battery charges faster. The web page stays on.">⚡ Charging mode</button>
   <span class="spacer"></span>
   <button class="estop" id="estop" title="Emergency stop (Space)">E-STOP</button>
 </header>
+
+<div class="banner" id="chargeBanner" hidden>
+  <span id="chargeBannerText">⚡ Charging mode: camera, lidar, mapping and driving are off so the battery charges faster.</span>
+  <span class="spacer"></span>
+  <button class="btn" id="chargeResume">Resume normal mode</button>
+</div>
 
 <main>
   <div class="col">
@@ -691,7 +704,11 @@ ros.subscribe('/web/battery_status', 'std_msgs/msg/String', msg => {
   battStatusAt = performance.now();
   const words = { charging: 'charging', discharging: 'in use', steady: 'steady', full: 'full', collecting: 'measuring' };
   let text = `${b.soc}%`, icon = '🔋';
-  if (b.state === 'charging') { icon = '⚡'; text = `Charging ${b.soc}% · full in ~${dur(b.eta_min)}`; }
+  if (b.state === 'charging') {
+    icon = '⚡';
+    text = `Charging ${b.soc}% · ` + (b.eta_min != null ? `full in ~${dur(b.eta_min)}`
+      : `time to full in ~${Math.max(1, Math.ceil((b.collecting_s || 60) / 60))} min`);
+  }
   else if (b.state === 'discharging') text += ` · ~${dur(b.eta_min)} left`;
   else if (b.state === 'full') { icon = '🔌'; text = 'Full'; }
   else if (b.state === 'collecting') text += ' · estimating…';
@@ -714,6 +731,38 @@ ros.subscribe('/web/battery_status', 'std_msgs/msg/String', msg => {
 ros.subscribe('/client_count', 'std_msgs/msg/Int32', msg => touch('clients', String(msg.data)));
 ros.subscribe('/ros_robot_controller/button', 'ros_robot_controller_msgs/msg/ButtonState',
   msg => log(`Robot button ${msg.id} state ${msg.state}`));
+
+// ---------- Charging mode ----------
+// Manual: stops the robot software on the car (host: system/charging_mode.sh); this page and the
+// battery reading stay up. A reboot always comes back in normal mode.
+let chargeMode = null;
+async function pollCharging() {
+  let m;
+  try { m = (await (await fetch('/api/charging')).json()).mode; } catch { return; }
+  if (m === chargeMode) return;
+  if (chargeMode !== null) log(m === 'on' ? 'Charging mode on: sensors and driving off'
+    : m === 'off' ? 'Normal mode: robot software starting (~30 s)' : 'Switching mode…');
+  chargeMode = m;
+  $('chargeBanner').hidden = m === 'off';
+  $('chargeBannerText').textContent = m === 'switching' ? '⏳ Switching mode… (about 30 s)'
+    : '⚡ Charging mode: camera, lidar, mapping and driving are off so the battery charges faster.';
+  $('chargeResume').disabled = m !== 'on';
+  $('chargeBtn').disabled = m !== 'off';
+}
+async function setCharging(on) {
+  if (on && !confirm('Switch to charging mode?\n\nCamera, lidar, mapping and driving stop until you press "Resume". ' +
+                     'The web page and battery reading stay on.')) return;
+  $('chargeBtn').disabled = $('chargeResume').disabled = true;
+  try {
+    const r = await (await fetch(`/api/charging?on=${on ? 1 : 0}`, { method: 'POST' })).json();
+    if (!r.ok) log(`Charging mode: ${r.message}`);
+  } catch (e) { log(`Charging mode request failed: ${e}`); }
+  setTimeout(pollCharging, 500);
+}
+$('chargeBtn').addEventListener('click', () => setCharging(true));
+$('chargeResume').addEventListener('click', () => setCharging(false));
+setInterval(pollCharging, 2000);
+pollCharging();
 
 // ---------- Map (SLAM) ----------
 // The server renders /map to a PNG and tracks the pose in the map frame (slam_manager.py).

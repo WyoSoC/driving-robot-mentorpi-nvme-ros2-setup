@@ -7,6 +7,7 @@
 MAX_RSS_KB=${MAX_RSS_KB:-1000000}   # 1 GB (normal: ~80 MB)
 GRACE_S=180                         # give bringup time to start
 
+[ -e "$(dirname "$0")/../state/charging" ] && exit 0   # charging mode: robot software stopped on purpose
 systemctl is-active -q mentorpi-bringup || exit 0
 since=$(systemctl show mentorpi-bringup -p ActiveEnterTimestamp --value)
 [ -n "$since" ] && [ $(( $(date +%s) - $(date -d "$since" +%s) )) -ge $GRACE_S ] || exit 0

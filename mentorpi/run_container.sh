@@ -33,7 +33,8 @@ if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
     docker rm -f "${CONTAINER_NAME}" >/dev/null
 fi
 
-mkdir -p "$HOME/docker/tmp" "$DIR/maps"
+mkdir -p "$HOME/docker/tmp" "$DIR/maps" "$DIR/state"
+rm -f "$DIR/state/charging" "$DIR/state/charging_request"   # charging mode is manual: always start normal
 UID_NUM=$(id -u)
 
 echo "Starting ${CONTAINER_NAME} (${CAR_NAME}, ROS_DOMAIN_ID=${ROS_DOMAIN_ID})..."
@@ -52,6 +53,7 @@ docker run -d \
     -v "$HOME/docker/tmp:/home/ubuntu/shared" \
     -v "$DIR/web_ui:/home/ubuntu/web_ui" \
     -v "$DIR/maps:/home/ubuntu/maps" \
+    -v "$DIR/state:/home/ubuntu/mentorpi_state" \
     -v "$DIR/calibration/imu_calib.yaml:/home/ubuntu/ros2_ws/src/calibration/config/imu_calib.yaml" \
     -v "$DIR/calibration/calibrate_params.yaml:/home/ubuntu/ros2_ws/src/driver/controller/config/calibrate_params.yaml" \
     -v "$DIR/calibration/imu_calib.yaml:$WS_SHARE/calibration/share/calibration/config/imu_calib.yaml" \

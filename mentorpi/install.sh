@@ -110,9 +110,10 @@ check 1a86:7523 "MS200 lidar" /dev/ldlidar
 check 3482:6723 "Angstrong HP60C depth camera"
 
 step "systemd services"
-mkdir -p "$HOME/docker/tmp"
+mkdir -p "$HOME/docker/tmp" "$DIR/state"
 for unit in mentorpi-container.service mentorpi-bringup.service mentorpi-webui.service \
-            mentorpi-watchdog.service mentorpi-watchdog.timer; do
+            mentorpi-watchdog.service mentorpi-watchdog.timer \
+            mentorpi-charging.service mentorpi-charging.path; do
     sed -e "s|@USER@|$USER|g" -e "s|@DIR@|$DIR|g" "$DIR/system/$unit" \
         | sudo tee "/etc/systemd/system/$unit" >/dev/null
 done
@@ -120,6 +121,7 @@ sudo systemctl daemon-reload
 if [ "$ENABLE" = 1 ]; then
     sudo systemctl enable mentorpi-container mentorpi-bringup mentorpi-webui >/dev/null 2>&1
     sudo systemctl enable --now mentorpi-watchdog.timer >/dev/null 2>&1
+    sudo systemctl enable --now mentorpi-charging.path >/dev/null 2>&1
     ok "installed and enabled at boot"
 else
     ok "installed (not enabled)"

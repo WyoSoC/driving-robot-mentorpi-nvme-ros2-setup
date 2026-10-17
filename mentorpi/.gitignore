@@ -2,6 +2,7 @@
 car.env
 calibration/
 maps/
+state/
 # Hiwonder factory leftovers that may exist in an extracted kit
 tool/
 mentorpi/
