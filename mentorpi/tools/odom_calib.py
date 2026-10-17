@@ -10,11 +10,12 @@ and how much the car really moved:
   angular  drive a left and a right circle: IMU yaw change vs /odom_raw yaw change
   check    no driving: show what the car sees and whether it is ready
 
-Prints "RESULT linear_correction_factor=..." / "RESULT angular_correction_factor=..." (new values
-= current value x measured ratio). Drives at 0.2 m/s; stops if something is too close, on timeout,
+Prints "RESULT motor_speed_factor=..." (linear: real speed / commanded speed; the controller divides
+motor commands by it, so commanded = real and /odom_raw needs no linear correction) or
+"RESULT angular_correction_factor=..." (new values = current value x measured ratio). Drives at 0.2 m/s; stops if something is too close, on timeout,
 on Ctrl+C and on exit.
 
-Usage: python3 odom_calib.py check|linear|angular CURRENT_LINEAR CURRENT_ANGULAR
+Usage: python3 odom_calib.py check|linear|angular CURRENT_LINEAR CURRENT_ANGULAR [CURRENT_MOTOR]
 """
 import math
 import signal
@@ -31,6 +32,7 @@ from sensor_msgs.msg import Imu, LaserScan
 
 MODE = sys.argv[1]
 CUR_LIN, CUR_ANG = float(sys.argv[2]), float(sys.argv[3])
+CUR_MOTOR = float(sys.argv[4]) if len(sys.argv) > 4 else 1.0
 SPEED = 0.2                 # m/s
 STEER = math.radians(20)    # circle steering angle (radius ~0.4 m)
 WALL_MIN, WALL_MAX = 1.0, 4.0
@@ -135,6 +137,9 @@ class Calib:
             x, y = self.odom_xy()
             if math.hypot(x - x0, y - y0) >= travel:
                 break
+            ahead = self.sector(0)   # also stop on the real (lidar) distance: an uncalibrated car
+            if ahead is not None and abs(d0 - ahead) >= travel:   # can drive much further than odometry says
+                break
             front = self.sector(0, 15) if direction > 0 else self.sector(180, 15)
             if front is not None and front < (STOP_FRONT if direction > 0 else 0.4):
                 self.stop()
@@ -165,7 +170,9 @@ class Calib:
         if abs(ratios[0] - ratios[1]) > 0.08:
             print(f'  WARNING: forward/back differ ({ratios[0]:.3f} vs {ratios[1]:.3f}); '
                   'check the wall is flat and square to the car', flush=True)
-        print(f'RESULT linear_correction_factor={CUR_LIN * r:.4f}  (current {CUR_LIN}, measured ratio {r:.4f})')
+        if abs(CUR_LIN - 1.0) > 1e-6:
+            print(f'  NOTE: linear_correction_factor is {CUR_LIN}; the result assumes odometry = commanded speed', flush=True)
+        print(f'RESULT motor_speed_factor={CUR_MOTOR * r:.4f}  (current {CUR_MOTOR}, measured ratio {r:.4f})')
 
     # ---- angular -------------------------------------------------------------
     def circle(self, steer):
@@ -211,7 +218,7 @@ class Calib:
         fmt = lambda v: f'{v:.2f} m' if v is not None else 'nothing'
         print(f'  ahead {fmt(f)}, behind {fmt(b)}, nearest {fmt(near)}')
         print(f'  linear test: {"ready" if f and WALL_MIN <= f <= WALL_MAX else f"needs a wall {WALL_MIN}-{WALL_MAX} m ahead"}'
-              f'{"" if b is None or b > 1.3 else " (and 1.3 m free behind)"}')
+              f'{"" if b is None or b > 1.3 else f", but needs 1.3 m free behind (has {b:.2f} m)"}')
         print(f'  angular test: {"ready" if near is None or near >= 0.6 else "needs ~1.2 m clear around the car"}')
 
 

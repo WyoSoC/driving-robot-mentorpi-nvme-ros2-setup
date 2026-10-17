@@ -223,15 +223,18 @@ How odometry works here: there is **no wheel-encoder feedback**. `odom_publisher
 with the IMU heading into `/odom` (the web UI trail). So distances follow the command (wrong if the
 wheels slip or the car is slower than asked), turns follow the gyro.
 
-`linear_correction_factor` / `angular_correction_factor` (factory 1.0 / 1.0) scale those
-velocities. In the factory code they had no effect on `/odom` (applied to a position the EKF
-ignores); `system/patch_odom.py` fixes that at container start. Measure them with the lidar and IMU
-as references; **the car drives at 0.2 m/s, on the floor only (never on a table: the lidar can't
-see the edge)**:
+`motor_speed_factor` (real speed / commanded speed, default 1.0) corrects the motors: car 1
+measured **2.29**, i.e. it drove 2.3x faster than commanded (the board's motor-type setting does not
+match the fitted motors). Motor commands are divided by it, so a commanded speed is the real speed
+and speed limits mean what they say. `angular_correction_factor` scales the odometry turn rate
+(`linear_correction_factor` stays 1.0 once the motor factor is set). In the factory code the
+correction factors had no effect on `/odom`; `system/patch_odom.py` fixes both at container start.
+Measure them with the lidar and IMU as references, **linear first; the car drives at 0.2 m/s, on
+the floor only (never on a table: the lidar can't see the edge)**:
 
 ```bash
 ~/mentorpi/calibrate_odom.sh check     # no driving: is the car placed right?
-~/mentorpi/calibrate_odom.sh linear    # facing a flat wall 1-4 m ahead, 1.3 m free behind
+~/mentorpi/calibrate_odom.sh linear    # facing a flat wall 1-4 m ahead, 1.3 m free behind -> motor_speed_factor
 ~/mentorpi/calibrate_odom.sh angular   # ~1.2 m clear all around: one left + one right circle
 ```
 
