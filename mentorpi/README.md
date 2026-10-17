@@ -80,6 +80,9 @@ Manual start without systemd (in this order):
   **Space** or the red button = E-stop (locks controls until released).
 - **Sensors**: lidar radar view (1–8 m), IMU attitude and heading, odometry trail,
   battery voltage (2S pack, % is approximate), per-sensor health lights, event log.
+- **Battery warnings**: the page shows "low" below 6.9 V and "critical" below 6.6 V. The board's own
+  (loud) beeper only sounds below 6.6 V (factory: 6.9 V, which beeps at ~35% under load); set
+  `BATTERY_ALARM_MV=...` in `car.env` to change it per car (6000-7400), then restart the container.
 - **Safety**: the page stops the car when you let go of the controls, switch tabs or lose
   the connection. On the robot, `web_ui_server.py` also stops the car if no command arrives
   for 0.5 s while moving (e.g. Wi-Fi drop), and caps speed at 0.7 m/s and steering at 40°.

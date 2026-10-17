@@ -11,9 +11,15 @@ each time, so the patch is never applied twice to the same file, but it is idemp
 2. get_pwm_servo_state service: the factory handler has the wrong signature and crashes the
    whole controller node when called (and its board read can block forever). Replaced by a
    handler that answers success=False immediately.
+3. Low-battery beep: the board beeps by itself below a threshold the node sets at start (factory
+   6.9 V, loud, and the battery dips below that under load at ~35% charge). Set from
+   BATTERY_ALARM_MV (env, default 6600 mV; car.env can override). The web UI still shows
+   "low" below 6.9 V, silently.
 
 Usage: python3 patch_controller.py STEER_SERVO_PORT [NODE_FILE]
 """
+import os
+import re
 import sys
 
 NODE = "/home/ubuntu/ros2_ws/src/driver/ros_robot_controller/ros_robot_controller/ros_robot_controller_node.py"
@@ -25,6 +31,9 @@ if len(sys.argv) > 2:
 if not 1 <= port <= 4:
     sys.exit(f"STEER_SERVO_PORT must be 1-4, got {port}")
 port_map = {} if port == 3 else {3: port, port: 3}
+alarm_mv = int(os.environ.get("BATTERY_ALARM_MV", "6600"))
+if not 6000 <= alarm_mv <= 7400:
+    sys.exit(f"BATTERY_ALARM_MV must be 6000-7400, got {alarm_mv}")
 
 src = open(NODE).read()
 if MARK in src:  # already patched: drop the old map line, re-apply below
@@ -61,9 +70,16 @@ for old, new in replacements:
         sys.exit(f"patch_controller: factory code changed, cannot apply patch:\n{old}")
     src = src.replace(old, new)
 
+# low-battery beep threshold (both machine-type branches)
+src, n = re.subn(r"self\.battery_level = (0x[0-9a-fA-F]+|\d+)(  # mentorpi patch.*)?",
+                 f"self.battery_level = {alarm_mv}  # mentorpi patch: board low-battery beep, mV", src)
+if n != 2:
+    sys.exit(f"patch_controller: expected 2 battery_level settings, found {n}")
+
 # PWM_PORT_MAP definition just before the first top-level class (imports may span lines)
 lines = src.split("\n")
 first_class = next(i for i, l in enumerate(lines) if l.startswith("class "))
 lines.insert(first_class, f"{MARK}\nPWM_PORT_MAP = {port_map!r}  # logical PWM servo id -> RRC Lite port\n")
 open(NODE, "w").write("\n".join(lines))
-print(f"ros_robot_controller patched: steering servo (id 3) -> port {port}, PWM_PORT_MAP={port_map}")
+print(f"ros_robot_controller patched: steering servo (id 3) -> port {port}, PWM_PORT_MAP={port_map}, "
+      f"low-battery beep below {alarm_mv} mV")

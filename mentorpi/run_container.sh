@@ -64,7 +64,8 @@ docker run -d \
 docker exec "${CONTAINER_NAME}" sed -i "s/^export ROS_DOMAIN_ID=.*/export ROS_DOMAIN_ID=${ROS_DOMAIN_ID}/" "$TYPERC"
 
 # Which RRC Lite PWM port the steering servo is plugged into (our standard: 4; factory: 3).
-docker exec -i -u ubuntu "${CONTAINER_NAME}" python3 - "${STEER_SERVO_PORT:-4}" < "$DIR/system/patch_controller.py"
+docker exec -i -u ubuntu -e BATTERY_ALARM_MV="${BATTERY_ALARM_MV:-6600}" "${CONTAINER_NAME}" \
+    python3 - "${STEER_SERVO_PORT:-4}" < "$DIR/system/patch_controller.py"
 
 # Odometry correction factors (calibration/calibrate_params.yaml) on the velocities the EKF uses.
 docker exec -i -u ubuntu "${CONTAINER_NAME}" python3 - < "$DIR/system/patch_odom.py"
