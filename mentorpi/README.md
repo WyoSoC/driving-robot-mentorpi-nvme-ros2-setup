@@ -506,7 +506,11 @@ A match also needs:
 - Matching walls that extend in two directions, not just one straight wall.
 
 This rejects maps that only touch along a wall. Real pairs share 13–31 m² of floor; wrong fits shared
-under 0.1 m². Test: `tests/run.sh test_team.py`. Not yet tried with two cars driving.
+under 0.1 m². Test: `tests/run.sh test_team.py`.
+
+Live check without driving: car 2 mapped while parked at its charger, and car 1 fetched that live map.
+It lined up with the saved living-room map (walls agree 95%, no clashes, 2.6 m² of shared floor). A
+saved map that never covered that corner was rejected. Not yet tried with two cars driving.
 
 ### What you need
 - The target car: Raspberry Pi 5 MentorPi M1 (Ackermann), with the same USB devices
