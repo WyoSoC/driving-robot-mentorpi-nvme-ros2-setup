@@ -524,6 +524,11 @@ different rooms. `web_ui/team.py` does the rest:
 - **At the end** each car saves its own map. The car whose name sorts first also saves the merged map
   (`team_YYYYMMDD_HHMM`).
 
+Drive test (both cars in the living room ~1 m apart, 2.5 m limit, started together from jpi1's page):
+the live maps lined up within 5–10 s (agree 0.95–0.97, kept all the way), jpi2 finished first (18 m²:
+the rest within its limit was already mapped by jpi1), jpi1 went on to 25.7 m², and the team map
+(`team_…`) has no doubled walls. 1 min 45 s from start to the saved team map.
+
 How well maps line up, from tests that split one real map into two halves (one rotated into its own
 frame):
 - With 1 m or more of overlap they line up within 2 cm and 0.3°.

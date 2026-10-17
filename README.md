@@ -18,7 +18,7 @@ height the car can hit, and of drops it can fall down.
 | 4 | Cars know about each other: status exchanged at all times, maps synced between cars | Done |
 | 5 | Obstacles from lidar **and** depth camera; camera grades threat: rug = drivable, low hump = bump, else obstacle | Done, tested live |
 | 6 | Cars avoid each other: each car's planner treats the other car as an obstacle, and a right-of-way rule when they meet | Done, drive-tested with both cars (crossing and head-on, from a tight start 40 cm apart) |
-| 7 | Map together: two cars explore one space at once, split the unexplored areas, merge into one map | Built (map merging works on real maps; live matching tested without driving); drive test next |
+| 7 | Map together: two cars explore one space at once, split the unexplored areas, merge into one map | Done, drive-tested (living room, 2.5 m limit: maps lined up within 10 s, team map in under 2 min). Next: one live shared map, the same on both cars |
 | 8 | Never drive off a drop (stairs, ledges): downward range sensors, no-go zones on the map | Open (needs sensors; camera sees no glossy floor) |
 | 9 | Later: AprilTag landmarks, traffic rules for shared corridors | Open |
 
