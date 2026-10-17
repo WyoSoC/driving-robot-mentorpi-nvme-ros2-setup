@@ -7,10 +7,21 @@ ahead, 58 deg wide) sees a 3-D picture of what is in front of the car.
 What this does with a depth frame, at most RATE_HZ times a second (the camera sends ~12; 12 Hz of this
 plus Nav2's two costmap layers overloaded the Pi 5 while navigating):
 1. Every 4th pixel becomes a 3-D point (camera intrinsics), moved into the car frame (base_footprint, TF).
-2. Points between MIN_H and MAX_H above the floor and within MAX_RANGE are obstacles: the band the car's
-   body occupies. The floor itself (and its noise) and anything above the car are left out.
-3. For each 0.5 deg direction the nearest obstacle -> a LaserScan in base_footprint: /depth/scan.
-4. Noise filter: a direction counts only if seen in at least 2 of the last 3 frames (median of 3).
+2. Floor: where the camera sees floor (carpet, matte floors; glossy floors return nothing), a plane is
+   fitted to it and heights are measured from that plane. This removes small camera tilt / height errors
+   that would otherwise make the floor 2 m away look like a 3-4 cm bump. Kept (smoothed) while no floor
+   is visible.
+3. Threat level (classify()): the points go into a height grid in front of the car (direction x 5 cm of
+   distance, highest point per cell). Walking outward along each direction:
+     drivable  - up to CLIMB_H above the floor (rugs, carpet, floor noise)
+     obstacle  - higher than BUMP_H, or a step of more than STEP_H within one 5 cm cell (a vertical edge
+                 the wheels can't climb: shoes, boxes, walls), or anything up to MAX_H (overhangs that
+                 would hit the body)
+     bump      - in between and rising gently (thresholds, cables, humps): the car can drive over it
+   Thresholds grow with distance by NOISE_PER_M (the camera's depth noise).
+4. Outputs: /depth/scan = nearest OBSTACLE per 0.5 deg direction (LaserScan in base_footprint, for Nav2
+   and the collision monitor: bumps don't block); /depth/bumps = nearest bump (for the page).
+   Noise filter: a direction counts only if seen in at least 2 of the last 3 frames (median of 3).
 
 Fusion: Nav2 uses /scan_raw and /depth/scan as two separate costmap layers (each clears only its own
 marks; one shared layer would let the lidar, whose plane passes over a shoe, erase the camera's mark of
@@ -42,10 +53,97 @@ BASE = 'base_footprint'
 STEP = 4                 # use every 4th pixel (160 x 120 points)
 MIN_RANGE = 0.15         # m from the camera: closer readings are unreliable
 MAX_RANGE = 2.5          # m
-MIN_H = 0.04             # m above the floor: lower = floor / noise
 MAX_H = 0.22             # m: higher = above the car (lidar at 0.16 m, top of the car ~0.2 m)
+# Threat levels (heights above the floor plane). The car's wheels climb small, gentle humps.
+CLIMB_H = 0.02           # m: up to this is just floor (rugs, carpet, noise)
+BUMP_H = 0.05            # m: higher than this is an obstacle, however gentle
+STEP_H = 0.025           # m: a rise of more than this within one cell (5 cm) is a vertical edge: obstacle
+NOISE_PER_M = 0.006      # m of extra tolerance per m of distance (depth noise ~0.5 % of range)
+CELL = 0.05              # m: height grid cell along each direction
+MIN_PTS = 2              # points needed in a cell (single stray points are ignored)
+# Floor plane fit
+FLOOR_BAND = 0.025       # m: points this close to the expected floor are floor candidates
+FLOOR_MIN_PTS = 150
+FLOOR_MAX_OFFSET = 0.03  # m, FLOOR_MAX_TILT rad: larger corrections are not believed
+FLOOR_MAX_TILT = math.radians(3)
+FLOOR_ALPHA = 0.2        # smoothing of the fitted plane
+FOV_HALF = math.radians(29)           # camera: 58 deg wide
+FLOOR_MIN_SECTORS = 7                 # floor points in at least 7 of 10 sectors across the view
 DROP_H = -0.06           # m: below the floor by this much = possible drop (stairs); counted only
 BIN = math.radians(0.5)
+
+
+def fit_floor(p):
+    """Plane z = a + b x + c y through the floor points (robust: fit, drop outliers, refit), or None."""
+    r = np.hypot(p[:, 0], p[:, 1])
+    sel = (np.abs(p[:, 2]) < FLOOR_BAND) & (r > 0.25) & (r < 1.8)
+    if sel.sum() < FLOOR_MIN_PTS:
+        return None
+    # Floor is flat: keep points from 5 cm patches whose heights vary by < 8 mm. The lower part of a
+    # vertical face (shoe, box) is also near floor height, but varies a lot within its patch.
+    cx, cy = np.floor(p[:, 0] / 0.05).astype(int), np.floor(p[:, 1] / 0.05).astype(int)
+    key = (cx - cx.min()) * 100000 + (cy - cy.min())
+    _, inv = np.unique(key[sel], return_inverse=True)
+    zmin = np.full(inv.max() + 1, np.inf); zmax = np.full(inv.max() + 1, -np.inf); cnt = np.zeros(inv.max() + 1)
+    np.minimum.at(zmin, inv, p[sel, 2]); np.maximum.at(zmax, inv, p[sel, 2]); np.add.at(cnt, inv, 1)
+    flat = ((zmax - zmin) < 0.008) & (cnt >= 3)
+    idx = np.flatnonzero(sel)
+    sel = np.zeros(len(p), bool); sel[idx[flat[inv]]] = True
+    if sel.sum() < FLOOR_MIN_PTS:
+        return None
+    # Real floor fills the view; a rug strip or a table top on one side is not the floor (glossy floors
+    # return nothing, and the fit would latch onto the rug).
+    ang = np.arctan2(p[sel, 1], p[sel, 0])
+    sectors = np.unique(np.clip(((ang + FOV_HALF) / (2 * FOV_HALF) * 10).astype(int), 0, 9))
+    if len(sectors) < FLOOR_MIN_SECTORS or np.ptp(r[sel]) < 0.6:
+        return None
+    q = p[sel]
+    for _ in range(2):
+        A = np.c_[np.ones(len(q)), q[:, 0], q[:, 1]]
+        coef, *_ = np.linalg.lstsq(A, q[:, 2], rcond=None)
+        res = np.abs(A @ coef - q[:, 2])
+        keep = res < 0.008
+        if keep.sum() < FLOOR_MIN_PTS:
+            return None
+        q = q[keep]
+    a, b, c = coef
+    if abs(a) > FLOOR_MAX_OFFSET or abs(b) > math.tan(FLOOR_MAX_TILT) or abs(c) > math.tan(FLOOR_MAX_TILT):
+        return None
+    return np.array([a, b, c])
+
+
+def classify(p, angle_min, n_bins):
+    """Points (N x 3, base_footprint, heights above the floor) -> per direction bin the distance of the
+    nearest obstacle and of the nearest bump before it (inf = none), plus cell counts for the page."""
+    r = np.hypot(p[:, 0], p[:, 1])
+    h = p[:, 2]
+    sel = (r < MAX_RANGE) & (h > -0.1) & (h <= MAX_H)
+    r, h = r[sel], h[sel]
+    a = np.arctan2(p[sel, 1], p[sel, 0])
+    ai = ((a - angle_min) / BIN).astype(int)
+    ri = (r / CELL).astype(int)
+    n_r = int(MAX_RANGE / CELL) + 1
+    ok = (ai >= 0) & (ai < n_bins) & (ri < n_r)
+    ai, ri, h = ai[ok], ri[ok], h[ok]
+    H = np.full((n_bins, n_r), -np.inf, dtype=np.float32)
+    N = np.zeros((n_bins, n_r), dtype=np.int32)
+    np.maximum.at(H, (ai, ri), h)
+    np.add.at(N, (ai, ri), 1)
+    valid = N >= MIN_PTS
+    tol = NOISE_PER_M * (np.arange(n_r) * CELL)[None, :]
+    # height of the nearest valid cell before this one (floor = 0 in front of the car where nothing is seen)
+    idx = np.where(valid, np.arange(n_r)[None, :], -1)
+    last = np.maximum.accumulate(idx, axis=1)
+    prev_idx = np.concatenate([np.full((n_bins, 1), -1), last[:, :-1]], axis=1)
+    prev_h = np.where(prev_idx >= 0, np.take_along_axis(np.where(valid, H, 0.0), np.maximum(prev_idx, 0), axis=1), 0.0)
+    high = H > CLIMB_H + tol
+    obstacle = valid & ((H > BUMP_H + tol) | (high & (H - prev_h > STEP_H + tol)))
+    bump = valid & high & ~obstacle
+    rng = (np.arange(n_r) * CELL)[None, :].repeat(n_bins, 0)
+    obst_r = np.where(obstacle, rng, np.inf).min(axis=1)
+    bump_r = np.where(bump & (rng < obst_r[:, None]), rng, np.inf).min(axis=1)
+    # inside a cell use the nearest real point distance (cells start at ri*CELL)
+    return obst_r.astype(np.float32), bump_r.astype(np.float32), int(obstacle.sum()), int(bump.sum())
 HISTORY = 3              # frames for the median filter
 RATE_HZ = 5.0            # processed depth frames per second (0.18 m/s -> 4 cm between frames)
 AGREE_M = 0.15           # m: lidar and camera "agree" within this
@@ -65,12 +163,18 @@ class DepthObstacles:
         self.angles = None
         self.lidar = None
         self.drops = 0
+        self.floor = np.zeros(3)      # fitted floor plane a + b x + c y (smoothed)
+        self.floor_seen = 0.0         # monotonic time the floor was last fitted
+        self.bump_hist = []
+        self.bumps = None
+        self.cells = (0, 0)
         self.frames = 0
         self.last_frame = 0.0
         self.totals = {'both': 0, 'camera': 0, 'lidar': 0}
         self.last_compare = 0.0
         self.compare = {}
         self.pub = node.create_publisher(LaserScan, '/depth/scan', 5)
+        self.bump_pub = node.create_publisher(LaserScan, '/depth/bumps', 5)
         self.cmp_pub = node.create_publisher(String, '/depth/compare', 1)
         node.create_subscription(CameraInfo, INFO_TOPIC, self.on_info, qos_profile_sensor_data)
         node.create_subscription(Image, DEPTH_TOPIC, self.on_depth, qos_profile_sensor_data)
@@ -128,19 +232,22 @@ class DepthObstacles:
         d = d[::STEP, ::STEP].reshape(-1).astype(np.float32) * 0.001          # m along the optical axis
         ok = (d > MIN_RANGE) & (d < MAX_RANGE)
         p = (self.rays[ok] * d[ok, None]) @ self.R.T + self.t                 # points in base_footprint
-        h = p[:, 2]
-        obst = (h >= MIN_H) & (h <= MAX_H)
-        r = np.hypot(p[obst, 0], p[obst, 1])
-        a = np.arctan2(p[obst, 1], p[obst, 0])
-        ranges = np.full(self.n_bins, np.inf, dtype=np.float32)
-        idx = np.clip(((a - self.angle_min) / BIN).astype(int), 0, self.n_bins - 1)
-        np.minimum.at(ranges, idx, r)
+        fl = fit_floor(p)
+        if fl is not None:
+            self.floor = (1 - FLOOR_ALPHA) * self.floor + FLOOR_ALPHA * fl if self.floor_seen else fl
+            self.floor_seen = now
+        p[:, 2] -= self.floor[0] + self.floor[1] * p[:, 0] + self.floor[2] * p[:, 1]   # height above floor
         near = np.hypot(p[:, 0], p[:, 1]) < 1.0
-        self.drops = int(np.count_nonzero((h < DROP_H) & near))
+        self.drops = int(np.count_nonzero((p[:, 2] < DROP_H) & near))
+        ranges, bumps, n_obst, n_bump = classify(p, self.angle_min, self.n_bins)
+        self.cells = (n_obst, n_bump)
 
         self.hist.append(ranges)
         del self.hist[:-HISTORY]
         filt = np.median(np.stack(self.hist), axis=0) if len(self.hist) == HISTORY else ranges
+        self.bump_hist.append(bumps)
+        del self.bump_hist[:-HISTORY]
+        self.bumps = np.median(np.stack(self.bump_hist), axis=0) if len(self.bump_hist) == HISTORY else bumps
         self.scan = filt
         self.frames += 1
 
@@ -156,6 +263,8 @@ class DepthObstacles:
         out.range_max = float(MAX_RANGE)
         out.ranges = [float(x) for x in filt]
         self.pub.publish(out)
+        out.ranges = [float(x) for x in self.bumps]
+        self.bump_pub.publish(out)
 
     # ---- comparison ------------------------------------------------------------------
     def lidar_bins(self):
@@ -181,7 +290,16 @@ class DepthObstacles:
     def publish_compare(self):
         now = time.monotonic()
         alive = now - self.last_frame < 1.0
-        res = {'alive': alive, 'frames': self.frames, 'band_m': [MIN_H, MAX_H], 'max_range': MAX_RANGE}
+        floor_age = now - self.floor_seen if self.floor_seen else None
+        res = {'alive': alive, 'frames': self.frames, 'max_range': MAX_RANGE,
+               'levels_m': {'drivable_up_to': CLIMB_H, 'bump_up_to': BUMP_H, 'max_step': STEP_H},
+               'floor': {'seen_s_ago': round(floor_age, 1) if floor_age is not None else None,
+                         'offset_cm': round(float(self.floor[0]) * 100, 1),
+                         'pitch_deg': round(math.degrees(math.atan(self.floor[1])), 2),
+                         'roll_deg': round(math.degrees(math.atan(self.floor[2])), 2)},
+               'bump_dirs': int(np.isfinite(self.bumps).sum()) if self.bumps is not None else 0,
+               'nearest_bump_m': (round(float(np.min(self.bumps)), 2)
+                                  if self.bumps is not None and np.isfinite(self.bumps).any() else None)}
         lid = self.lidar_bins() if alive else None
         if alive and lid is not None and self.scan is not None:
             cam = self.scan

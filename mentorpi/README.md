@@ -330,12 +330,33 @@ The lidar scans a single plane 16 cm above the floor, so it can't see lower thin
 cables or toys. `web_ui/depth_obstacles.py` turns every depth image (about 12 per second) into
 obstacles:
 
-1. **Points:** every 4th pixel becomes a 3-D point in the car's frame.
-2. **Height band:** points 4–22 cm above the floor and up to 2.5 m away count as obstacles. The
-   floor and anything above the car are ignored.
-3. **Scan:** the nearest obstacle in each 0.5° direction becomes `/depth/scan`, covering the
-   camera's 58° view.
-4. **Noise filter:** a direction only counts when it's seen in 2 of the last 3 images.
+1. **Points:** every 4th pixel becomes a 3-D point in the car's frame, 5 images per second.
+2. **Floor calibration:** where the camera sees floor, it fits a plane to it, and heights are measured
+   from that plane. That corrects camera tilt and height errors (a 1° tilt fits as 1.08°). Carpet and
+   matte floors return points; glossy floors return none.
+
+   It only accepts flat 5 cm patches, spread over at least 7 of 10 sectors across the view, so a rug
+   strip or the bottoms of objects aren't taken for the floor. With no floor visible, heights come from
+   the nominal camera mounting.
+3. **Threat level:** the camera builds a height grid of the area in front, one cell per direction and per
+   5 cm of distance. It then walks outward along each direction:
+
+   | Class | Rule | Examples | Navigation |
+   |---|---|---|---|
+   | drivable | up to `CLIMB_H` (2 cm) | rugs, carpet edges, floor | ignored |
+   | bump | up to `BUMP_H` (5 cm) **and** no step over `STEP_H` (2.5 cm) within 5 cm | door thresholds, cables, gentle humps | ignored (drivable), shown in yellow |
+   | obstacle | taller than 5 cm, or a steeper step, up to 22 cm (the car's height) | shoes, books, boxes, overhangs | `/depth/scan`: avoided and stopped for |
+
+   Thresholds grow by 6 mm per metre of distance, because depth noise grows with distance. The values
+   are at the top of `web_ui/depth_obstacles.py`; adjust them to what the car can actually climb.
+4. **Scans:** the nearest obstacle and the nearest bump in each 0.5° direction become `/depth/scan` and
+   `/depth/bumps`, covering the camera's 58° view. A direction only counts when it's seen in 2 of the
+   last 3 images.
+
+Simulated scenes, with car 1's lens and mounting, a carpet or glossy floor, and the camera tilted 0° or
+1°, all classify correctly: a 1.5 cm rug and open floor as drivable, a 3 cm threshold and a gentle
+4 cm hump as bumps, and a 4 cm book (vertical edge) and a 10 cm shoe as obstacles. Processing takes
+about 9 ms per image.
 
 **How navigation uses both sensors:** the camera has its own layer in both obstacle maps. A shared
 layer wouldn't work, because the lidar scans over a shoe and would erase the camera's mark. The

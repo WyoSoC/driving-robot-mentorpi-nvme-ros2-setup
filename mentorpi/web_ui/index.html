@@ -17,6 +17,7 @@
     --warn: #d29922;
     --peer: #58a6ff;
     --cam: #c678ff;          /* depth camera obstacles */
+    --bump: #e3b341;         /* depth camera: drivable bumps */
     --bad: #f85149;
     --radius: 12px;
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -35,7 +36,7 @@
   :root[data-theme="light"] {
     --bg: #f6f8fa; --panel: #ffffff; --panel-2: #eef1f4; --line: #d0d7de;
     --text: #1f2328; --muted: #59636e; --accent: #0a7cc4; --ok: #1a7f37; --warn: #9a6700;
-    --peer: #0969da; --bad: #cf222e; --cam: #8a3ffc;
+    --peer: #0969da; --bad: #cf222e; --cam: #8a3ffc; --bump: #b08800;
     --canvas: #f3f5f7; --grid: #dde3e9; --grid-2: #e6eaee; --dim: #6e7781; --dial: #ffffff;
     --overlay: rgba(255,255,255,.85);
     --map-free: #ffffff; --map-unknown: #d3d9df; --map-occ: #1f2328;
@@ -88,7 +89,7 @@
   .slam-bar input { background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
     border-radius: 8px; padding: 4px 8px; width: 10em; max-width: 100%; }
   .slam-info { font-size: 11px; color: var(--muted); margin-top: 4px; }
-  #cmpInfo b { font-weight: 600; } #cmpInfo .cam { color: var(--cam); }
+  #cmpInfo b { font-weight: 600; } #cmpInfo .cam { color: var(--cam); } #cmpInfo .bump { color: var(--bump); }
   .panel h2 .right select + select { margin-left: 4px; }
   .slam-bar select { background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
     border-radius: 8px; padding: 4px 6px; font: inherit; font-size: 12px; }
@@ -220,7 +221,7 @@
   </section>
   <section class="panel" id="lidarPanel">
     <h2>Lidar + camera <span class="right">
-      <select id="obsView" aria-label="Which sensors to show" title="Purple: depth camera obstacles 4-22 cm high (the lidar scans at 16 cm)">
+      <select id="obsView" aria-label="Which sensors to show" title="Depth camera: purple = obstacle (too high or a steep edge), yellow = bump the car can drive over. Lidar dots: green / amber / red by distance.">
         <option value="both" selected>Lidar + camera</option><option value="lidar">Lidar</option><option value="camera">Camera</option>
       </select>
       <select id="lidarRange" aria-label="Lidar view range">
@@ -358,7 +359,7 @@ function storageSet(key, val) { try { localStorage.setItem(key, val); } catch { 
 // ---------- Theme (dark / light) ----------
 // Drawing code reads its colours from C (the CSS variables of the current theme).
 const C = { version: 0 };
-const THEME_VARS = ['text', 'muted', 'cam', 'line', 'canvas', 'grid', 'grid-2', 'dim', 'dial', 'overlay',
+const THEME_VARS = ['text', 'muted', 'cam', 'bump', 'line', 'canvas', 'grid', 'grid-2', 'dim', 'dial', 'overlay',
                     'map-free', 'map-unknown', 'map-occ'];
 function readTheme() {
   const cs = getComputedStyle(document.documentElement);
@@ -671,7 +672,8 @@ $('obsView').onchange = () => { storageSet('obsView', $('obsView').value); drawL
 
 // ---------- Depth camera obstacles (web_ui/depth_obstacles.py) ----------
 // /depth/scan: nearest obstacle 4-22 cm above the floor per direction, in the car frame, camera view only.
-let dscan = null;
+let dscan = null, dbumps = null;
+ros.subscribe('/depth/bumps', 'sensor_msgs/msg/LaserScan', msg => { dbumps = msg; }, 300);
 ros.subscribe('/depth/scan', 'sensor_msgs/msg/LaserScan', msg => {
   dscan = msg;
   let near = Infinity;
@@ -691,10 +693,18 @@ ros.subscribe('/depth/compare', 'std_msgs/msg/String', msg => {
     ` · <b>${n.lidar}</b> lidar only` +
     (c.mean_diff_m != null ? ` · offset ${(c.mean_diff_m * 100).toFixed(0)} cm` : '') +
     ` — since start ${pct('both')} / <span class="cam">${pct('camera')}</span> / ${pct('lidar')}` +
+    (c.bump_dirs ? ` · <b class="bump">${c.bump_dirs}</b> bump${c.nearest_bump_m != null ? ' (' + c.nearest_bump_m.toFixed(2) + ' m)' : ''}` : '') +
     (c.drop_points ? ` · ⚠ ${c.drop_points} points below the floor` : '');
   el.title = `Since start (${tot} direction samples): agree ${pct('both')}, camera only ${pct('camera')}, ` +
     `lidar only ${pct('lidar')}. Camera only = low things under the lidar plane; lidar only = things the camera ` +
     `misses (shiny, dark, thin, too close or too far).`;
+  const f = c.floor || {};
+  el.title += f.seen_s_ago != null && f.seen_s_ago < 5
+    ? ` Floor fitted (${f.offset_cm} cm, pitch ${f.pitch_deg}°, roll ${f.roll_deg}°).`
+    : ' Floor not visible (glossy floor?): heights from the nominal camera mounting.';
+  const lv = c.levels_m || {};
+  if (lv.drivable_up_to != null) el.title += ` Drivable up to ${lv.drivable_up_to * 100} cm, bumps up to ${lv.bump_up_to * 100} cm` +
+    ` if no step over ${lv.max_step * 100} cm; higher or steeper = obstacle.`;
 }, 500);
 
 function drawLidar() {
@@ -730,7 +740,15 @@ function drawLidar() {
       ctx.fillRect(sx - 1.5, sy - 1.5, 3, 3);
     });
   }
-  if (dscan && view !== 'lidar') {          // camera obstacles: purple squares with a ring
+  if (dbumps && view !== 'lidar') {         // camera bumps: drivable, yellow
+    ctx.fillStyle = C.bump;
+    dbumps.ranges.forEach((r, i) => {
+      if (r == null || !isFinite(r) || r > range * 1.05) return;
+      const a = dbumps.angle_min + i * dbumps.angle_increment;
+      ctx.fillRect(cx - Math.sin(a) * r * scale - 2, cy - Math.cos(a) * r * scale - 1, 4, 3);
+    });
+  }
+  if (dscan && view !== 'lidar') {          // camera obstacles: purple squares
     ctx.fillStyle = C.cam; ctx.strokeStyle = C.cam; ctx.lineWidth = 1;
     dscan.ranges.forEach((r, i) => {
       if (r == null || !isFinite(r) || r > range * 1.05) return;
