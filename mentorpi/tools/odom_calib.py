@@ -209,12 +209,16 @@ class Calib:
             if guard is not None and guard < (STOP_FRONT if direction > 0 else 0.4):
                 self.stop()
                 sys.exit(f'stopped: obstacle {guard:.2f} m {"ahead" if direction > 0 else "behind"}')
-            if len(samples) >= 3 and samples[-1][0] > samples[-3][0]:   # runaway: much faster than sent
-                fast = abs(samples[-1][1] - samples[-3][1]) / (samples[-1][0] - samples[-3][0])
-                if fast > max(3 * sent, 0.3):
+            if len(samples) >= 6 and samples[-1][0] - samples[-6][0] >= 0.35:   # runaway: much faster than sent
+                w = samples[-6:]
+                fast = abs(w[-1][1] - w[0][1]) / (w[-1][0] - w[0][0])
+                steady = all((b[1] - a[1]) * (w[-1][1] - w[0][1]) >= 0 for a, b in zip(w, w[1:]))
+                if fast > max(3 * sent, 0.3) and steady and abs(w[-1][1] - d0) > 0.15:
                     self.stop()
                     time.sleep(1.0)
-                    print(f'    sent {sent:.3f} {"fwd" if direction > 0 else "back"}: RUNAWAY, ~{fast:.2f} m/s real; stopped', flush=True)
+                    trace = ' '.join(f'{r:.2f}' for _, r in samples[-10:])
+                    print(f'    sent {sent:.3f} {"fwd" if direction > 0 else "back"}: RUNAWAY, ~{fast:.2f} m/s real; '
+                          f'stopped (wall distance, last readings: {trace})', flush=True)
                     raise Runaway(fast)
             if el > 10:
                 break
