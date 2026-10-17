@@ -211,13 +211,24 @@ class Calib:
         d0 = self.averaged(lambda: self.sector(0), 1.0)
         if d0 is None:
             sys.exit('no lidar return straight ahead')
-        samples, seen, t0 = [], set(), time.time()
+        samples, seen, t0, glitches = [], set(), time.time(), 0
         while True:
             el = time.time() - t0
             f = self.scan_front()
             if f and f[1] is not None and f[0] not in seen:
                 seen.add(f[0])
-                samples.append((f[0], f[1]))
+                # drop impossible jumps (> 2 m/s; the car tops out ~1.6 m/s): the narrow sector ahead
+                # sometimes sees past the wall (gap, door edge) when the heading changes a little
+                last = samples[-1] if samples else (f[0] - 0.1, d0)
+                if abs(f[1] - last[1]) <= 2.0 * max(f[0] - last[0], 0.1) + 0.05:
+                    samples.append((f[0], f[1]))
+                else:
+                    glitches += 1
+                    if glitches > 8:
+                        self.stop()
+                        sys.exit('stopped: the wall reading ahead keeps jumping; is the car still square to a '
+                                 'flat wall, with no door or gap next to where it points?')
+                    continue
                 if (f[1] <= target) if direction > 0 else (f[1] >= target):
                     break
             guard = self.guard(direction)
@@ -251,7 +262,8 @@ class Calib:
         den = sum((a - mt) ** 2 for a, _ in late)
         v = abs(sum((a - mt) * (b - mr) for a, b in late) / den) if den > 0 else 0.0
         moved = abs(samples[-1][1] - d0)
-        print(f'    sent {sent:.3f} {"fwd" if direction > 0 else "back"}: real {v:.3f} m/s, moved {moved:.2f} m', flush=True)
+        print(f'    sent {sent:.3f} {"fwd" if direction > 0 else "back"}: real {v:.3f} m/s, moved {moved:.2f} m'
+              f'{f", {glitches} lidar glitches ignored" if glitches else ""}', flush=True)
         return v if moved > 0.05 else 0.0
 
     def back_off(self):
