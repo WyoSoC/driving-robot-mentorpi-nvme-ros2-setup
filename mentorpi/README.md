@@ -234,7 +234,9 @@ ROS gets no wheel feedback. `odom_publisher` integrates the *commanded* speed an
 odometry. `system/patch_ekf.py` sets this up: the factory config used the heading of
 `imu_complementary_filter` (`/imu`), which swallows slow turns (it re-estimates the gyro bias
 whenever turning < 11 deg/s) and came out mirrored in the EKF (car 1 turned 90 deg left by hand:
-gyro +89, /imu +41, /odom -41). While parked, `/odom_raw` pins the turn rate to 0.
+gyro +89, /imu +41, /odom -41). The heading is the gyro alone (`/odom_raw`'s turn rate lost
+heading at every stop: car 2, 23.8 m loop, EKF +27 deg vs gyro +9.5); parked it drifts ~1-2 deg/min,
+which SLAM corrects.
 
 `motor_speed_map` ([real, sent, ...] m/s, measured by `speedmap`) corrects the motor commands so a
 commanded speed is the real speed and speed limits mean what they say (both cars: real = 0.89-0.98 x

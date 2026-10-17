@@ -9,7 +9,10 @@ accelerated. And the EKF output heading came out mirrored (car 1, hand-turned 90
 
 Fix: fuse only the turn rate (vyaw) from /imu_corrected (imu_calib: gyro bias removed once at start,
 while the car stands still; 0.01-0.03 deg/s drift). The heading is the EKF's own integral of it.
-Speed still comes from /odom_raw, whose "stopped" covariance pins the turn rate to 0 while parked.
+Speed still comes from /odom_raw, but not its turn rate: its "stopped" covariance pinned the turn
+rate to 0 the moment the command reached 0, while the car was still rolling and turning (car 2,
+23.8 m loop with 27 stops: EKF heading +27 deg off at the start point, the gyro alone +9.5). So the
+heading is the gyro alone; parked it drifts ~1-2 deg/min, which SLAM corrects.
 /imu (the filter) stays for the web page's attitude display.
 
 Run by run_container.sh: python3 patch_ekf.py [FILE ...]
@@ -24,6 +27,16 @@ MARK = "# mentorpi patch: gyro turn rate from /imu_corrected"
 
 OLD_TOPIC = "      imu0: imu\n"
 NEW_TOPIC = f"      {MARK}\n      imu0: imu_corrected\n"
+OLD_ODOM = """      odom0_config: [false, false, false,
+                     false, false, false,
+                     true, true, false,
+                     false, false, true,
+                     false, false, false]"""
+NEW_ODOM = """      odom0_config: [false, false, false,
+                     false, false, false,
+                     true, true, false,
+                     false, false, false,
+                     false, false, false]"""
 OLD_CFG = """      imu0_config: [false, false, false,
                     false, false, true,
                     false, false, false,
@@ -44,12 +57,12 @@ for path in FILES:
     if MARK in src:
         done += 1
         continue
-    for old in (OLD_TOPIC, OLD_CFG):
+    for old in (OLD_TOPIC, OLD_CFG, OLD_ODOM):
         if src.count(old) != 1:
             sys.exit(f"patch_ekf: factory ekf.yaml changed ({path}), cannot apply patch:\n{old}")
-    src = src.replace(OLD_TOPIC, NEW_TOPIC).replace(OLD_CFG, NEW_CFG)
+    src = src.replace(OLD_TOPIC, NEW_TOPIC).replace(OLD_CFG, NEW_CFG).replace(OLD_ODOM, NEW_ODOM)
     open(path, "w").write(src)
     done += 1
 if not done:
     sys.exit("patch_ekf: no ekf.yaml found")
-print(f"ekf patched ({done} files): turn rate from /imu_corrected, no /imu orientation")
+print(f"ekf patched ({done} files): heading from the gyro (/imu_corrected) only")
