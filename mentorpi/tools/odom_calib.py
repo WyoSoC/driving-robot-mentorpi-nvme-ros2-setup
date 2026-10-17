@@ -69,10 +69,38 @@ class Calib:
         self.imu_yaw = None
         self.n.create_subscription(LaserScan, '/scan_raw', self._scan, qos_profile_sensor_data)
         self.n.create_subscription(Odometry, '/odom_raw', lambda m: setattr(self, 'odom', m), 10)
-        self.n.create_subscription(Imu, '/imu', lambda m: setattr(self, 'imu_yaw', yaw_of(m.orientation)), 10)
+        self.gyro_yaw, self._gyro_t = 0.0, None   # integrated gyro z: the filtered /imu orientation went
+        self.n.create_subscription(Imu, '/imu', self._imu, 50)   # wrong while driving (car 2: +-175 deg/pass)
         self.lock = threading.Lock()
         self.spinner = threading.Thread(target=self._spin, daemon=True)
         self.spinner.start()
+
+    def _imu(self, m):
+        self.imu_yaw = yaw_of(m.orientation)
+        t = m.header.stamp.sec + m.header.stamp.nanosec * 1e-9
+        if self._gyro_t is not None and 0 < t - self._gyro_t < 0.5:
+            self.gyro_yaw += m.angular_velocity.z * (t - self._gyro_t)
+        self._gyro_t = t
+
+    def wall_angle(self, half_deg=20.0):
+        """Angle (rad) of the wall's normal relative to the car's heading, from a line fit to the
+        lidar points within +-half_deg ahead (outliers > 5 cm dropped). + = wall normal to the left."""
+        with self.lock:
+            m = self.scan
+        if m is None:
+            return None
+        pts = [(r * math.cos(a), r * math.sin(a)) for i, r in enumerate(m.ranges)
+               for a in [wrap(m.angle_min + i * m.angle_increment)]
+               if abs(a) <= math.radians(half_deg) and m.range_min < r < m.range_max and math.isfinite(r)]
+        for _ in range(2):
+            if len(pts) < 10:
+                return None
+            n = len(pts); my = sum(y for _, y in pts) / n; mx = sum(x for x, _ in pts) / n
+            syy = sum((y - my) ** 2 for _, y in pts)
+            a = sum((y - my) * (x - mx) for x, y in pts) / syy if syy > 0 else 0.0   # x = a*y + b
+            b = mx - a * my
+            pts = [(x, y) for x, y in pts if abs(x - (a * y + b)) < 0.05]
+        return math.atan(-a)
 
     def _spin(self):
         try:
@@ -307,7 +335,9 @@ class Calib:
     def straight_yaw(self, direction, target, speed=0.1):
         """Drive straight until the wall ahead is at `target` m. Return (metres moved, yaw change)."""
         d0 = self.averaged(lambda: self.sector(0), 1.0)
-        y0 = self.imu_yaw
+        w0, g0 = self.averaged(self.wall_angle, 1.0), self.gyro_yaw
+        if w0 is None:
+            sys.exit('cannot see a flat wall ahead (+-20 deg)')
         t0 = time.time()
         while True:
             f = self.sector(0)
@@ -325,10 +355,19 @@ class Calib:
         self.stop()
         time.sleep(1.5)
         d1 = self.averaged(lambda: self.sector(0), 1.0)
-        dyaw = wrap(self.imu_yaw - y0)
+        w1 = self.averaged(self.wall_angle, 1.0)
+        if w1 is None:
+            sys.exit('lost the wall ahead')
+        dyaw = -(w1 - w0)                    # car turns left -> the wall's normal swings right
+        dgyro = self.gyro_yaw - g0
         moved = abs(d1 - d0)
         print(f'  {"forward" if direction > 0 else "back   "}: moved {moved:.2f} m, heading changed '
-              f'{math.degrees(dyaw):+.1f} deg ({math.degrees(dyaw) / max(moved, 0.01):+.1f} deg/m)', flush=True)
+              f'{math.degrees(dyaw):+.2f} deg by lidar, {math.degrees(dgyro):+.2f} by gyro '
+              f'({math.degrees(dyaw) / max(moved, 0.01):+.2f} deg/m)', flush=True)
+        if abs(dyaw) > math.radians(15) or abs(dgyro) > math.radians(15):
+            sys.exit('heading changed > 15 deg in one pass: not plausible for a steering trim; nothing saved')
+        if abs(dyaw - dgyro) > max(math.radians(1.5), 0.3 * abs(dyaw)):
+            sys.exit('lidar and gyro disagree on the heading change; nothing saved')
         return moved, dyaw
 
     def steer(self):
@@ -355,7 +394,7 @@ class Calib:
 
     # ---- angular -------------------------------------------------------------
     def circle(self, steer):
-        imu_prev, odo_prev = self.imu_yaw, yaw_of(self.odom.pose.pose.orientation)
+        imu_prev, odo_prev = self.gyro_yaw, yaw_of(self.odom.pose.pose.orientation)
         imu_turn = odo_turn = 0.0
         end = time.time() + 2 * math.pi * 0.4 / SPEED * 2.5
         while abs(imu_turn) < math.radians(340):
@@ -368,13 +407,13 @@ class Calib:
                 sys.exit('stopped: timeout (is the car moving?)')
             self.drive(SPEED, steer)
             time.sleep(0.05)
-            imu, odo = self.imu_yaw, yaw_of(self.odom.pose.pose.orientation)
-            imu_turn += wrap(imu - imu_prev)
+            imu, odo = self.gyro_yaw, yaw_of(self.odom.pose.pose.orientation)
+            imu_turn += imu - imu_prev
             odo_turn += wrap(odo - odo_prev)
             imu_prev, odo_prev = imu, odo
         self.stop()
         time.sleep(1.0)
-        imu_turn += wrap(self.imu_yaw - imu_prev)
+        imu_turn += self.gyro_yaw - imu_prev
         odo_turn += wrap(yaw_of(self.odom.pose.pose.orientation) - odo_prev)
         print(f'  {"left " if steer > 0 else "right"} circle: IMU {math.degrees(imu_turn):+.1f} deg, '
               f'odometry {math.degrees(odo_turn):+.1f} deg  (ratio {imu_turn / odo_turn:.3f})', flush=True)
@@ -395,7 +434,12 @@ class Calib:
         f, b, near = (self.averaged(lambda: self.sector(0)), self.averaged(lambda: self.guard(-1)),
                       self.averaged(self.nearest, 1.0))
         fmt = lambda v: f'{v:.2f} m' if v is not None else 'nothing'
+        g0 = self.gyro_yaw
+        wa = self.averaged(self.wall_angle, 1.0)
+        drift = math.degrees(self.gyro_yaw - g0)
         print(f'  ahead {fmt(f)}, behind {fmt(b)}, nearest {fmt(near)}')
+        print(f'  wall ahead: {"not seen" if wa is None else f"{math.degrees(wa):+.1f} deg off square"}; '
+              f'gyro drift standing still {drift:+.2f} deg/s')
         print(f'  linear test: {"ready" if f and WALL_MIN <= f <= WALL_MAX else f"needs a wall {WALL_MIN}-{WALL_MAX} m ahead"}'
               f'{"" if b is None or b > 1.3 else f", but needs 1.3 m free behind (has {b:.2f} m)"}')
         print(f'  angular test: {"ready" if near is None or near >= 0.6 else "needs ~1.2 m clear around the car"}')
