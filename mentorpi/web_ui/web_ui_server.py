@@ -19,6 +19,8 @@
   POST /api/slam/start | /api/slam/stop | /api/slam/save?name=NAME
 - Exploration (explore_manager.py): POST /api/explore/start?radius=M (0 = no limit) | /api/explore/stop;
   its status is in GET /api/slam ("explore"). Maps by itself: SLAM + Nav2 on the live map + frontiers.
+  team=1 on start / stop also starts / stops every other online car that is idle / exploring (mapping
+  together, team.py; GET /api/slam/grid = this car's live map for the others).
 - Depth camera obstacles (depth_obstacles.py): /depth/scan (LaserScan, base_footprint) for Nav2 and
   /depth/compare (JSON: camera vs lidar) for the page; GET /api/depth = the latest comparison.
 - Other cars (peer_manager.py, peers from fleet.env): GET /api/self = this car's status (what the other
@@ -62,6 +64,7 @@ from battery_estimator import BatteryEstimator
 from depth_obstacles import DepthObstacles
 from explore_manager import Explorer
 from fleet import Fleet
+from team import Team
 from nav_manager import NavManager
 from peer_manager import PeerManager
 from slam_manager import SlamManager
@@ -119,9 +122,28 @@ class WebBridge(Node):
         self.depth_obs = DepthObstacles(self, self.slam.tf)   # /depth/scan + /depth/compare
         self.explorer = Explorer(self, self.slam, self.nav, CAR_NAME)
         self.peers = PeerManager(CAR_NAME, PEERS, self.get_logger())
-        self.fleet = Fleet(self, self.slam.tf, self.nav, self.peers, CAR_NAME)
+        self.team = Team(self, self.slam, self.peers, CAR_NAME)      # mapping together
+        self.explorer.team = self.team
+        self.fleet = Fleet(self, self.slam.tf, self.nav, self.peers, CAR_NAME, self.team)
         self.merge_lock = threading.Lock()
         self.merge_cache = {}      # (hash a, hash b) -> align result
+
+    def team_forward(self, action, modes, **query):
+        """Start / stop exploring on the other online cars in one of `modes` (mapping together)."""
+        notes = []
+        for p in self.peers.summary():
+            st = p['status'] or {}
+            if not p['online'] or st.get('mode') not in modes:
+                if p['online'] and action == 'start':
+                    notes.append(f'{p["car"]} not started ({st.get("mode")})')
+                continue
+            try:
+                j = json.loads(self.peers.post(p['car'], f'/api/explore/{action}', timeout=5.0, **query))
+                notes.append(f'{p["car"]}: {j.get("message", "")}')
+            except Exception as exc:
+                notes.append(f'{p["car"]}: no answer ({exc})')
+        self.get_logger().info(f'team {action}: ' + ('; '.join(notes) or 'no other car'))
+        return (' · ' + '; '.join(notes)) if notes else ' · no other car online'
 
     def align_maps(self, a, b):
         """Line map b up with map a (cached by content). Returns (grid a, grid b, result dict)."""
@@ -156,8 +178,8 @@ class WebBridge(Node):
             'charging': self.charging,
             'battery': self.battery_st,
             'speed': round(self.speed, 3),
-            'nav': {k: nav[k] for k in ('running', 'map_name', 'pose', 'pose_set', 'goal', 'goal_state', 'plan',
-                                        'feedback')}
+            'nav': {k: nav[k] for k in ('running', 'slam_mode', 'map_name', 'pose', 'pose_set', 'goal', 'goal_state',
+                                        'plan', 'feedback')}
                    | {'map_hash': nav['map']['hash'] if nav['map'] else None,
                       'yield_to': self.fleet.yield_to},
             'slam': slam_on,
@@ -263,6 +285,9 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
         if url.path == '/api/slam/map.png':
             png = slam.png
             return self._send(200, png, 'image/png') if png else self._send(404, {'error': 'no map yet'})
+        if url.path == '/api/slam/grid':
+            g = self.node.team.my_grid_json()
+            return self._send(200, g) if g else self._send(404, {'error': 'not mapping'})
         if url.path == '/api/nav':
             return self._send(200, self.node.nav.status() | {'fleet': self.node.fleet.status()})
         if url.path == '/api/depth':
@@ -391,11 +416,16 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
                     raise ValueError
             except ValueError:
                 return self._send(400, {'ok': False, 'message': 'radius in m (0 = no limit)'})
-            dry = urllib.parse.parse_qs(url.query).get('dry', ['0'])[0] == '1'
+            qs = urllib.parse.parse_qs(url.query)
+            dry = qs.get('dry', ['0'])[0] == '1'
             ok, msg = self.node.explorer.start(radius, dry=dry)
+            if ok and qs.get('team', ['0'])[0] == '1':
+                msg += self.node.team_forward('start', ('idle',), radius=radius, dry=int(dry))
             return self._send(200 if ok else 400, {'ok': ok, 'message': msg})
         if url.path == '/api/explore/stop':
             ok, msg = self.node.explorer.stop()
+            if urllib.parse.parse_qs(url.query).get('team', ['0'])[0] == '1':
+                msg += self.node.team_forward('stop', ('exploring',))
             return self._send(200, {'ok': ok, 'message': msg})
         if url.path == '/api/slam/stop' and (self.node.explorer.active() or self.node.nav.slam_mode):
             self.node.explorer.stop('mapping stopped')

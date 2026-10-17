@@ -14,8 +14,8 @@ T = {}
 for a, b in itertools.permutations(names, 2):
     if (b, a) in T: continue
     t0 = time.time(); t, q = mm.align(G[a], G[b]); conf = mm.good_match(q); dt = time.time() - t0
-    T[(a, b)] = (t, conf)
-    print(f"{a:28s} <- {b:28s} x={t[0]:6.2f} y={t[1]:6.2f} yaw={math.degrees(t[2]):7.1f}  ok={conf}  {dt:.1f}s")
+    T[(a, b)] = (t, conf); extra = f" floor {q['shared_free_m2']:.1f} m2 spread {q['spread_m']:.2f} m"
+    print(f"{a:28s} <- {b:28s} x={t[0]:6.2f} y={t[1]:6.2f} yaw={math.degrees(t[2]):7.1f}  ok={conf} {extra} {dt:.1f}s")
     open(f'/tmp/merge_{a}__{b}.png', 'wb').write(mm.overlay_png(G[a], G[b], t))
 def get(a, b):
     if (a, b) in T: return T[(a, b)][0]

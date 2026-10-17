@@ -1,7 +1,8 @@
 """Cars avoiding each other (runs inside web_ui_server.py, uses peer_manager's status of the other cars).
 
-Only when both cars navigate on the same map (same content hash) and both know where they are, because
-positions are only comparable then.
+Only when positions are comparable: both cars navigate on the same saved map (same content hash) and
+both know where they are, or both explore and their live maps are lined up (team.py: transform from the
+other car's frame into this one).
 
 1. Costmap: the other car's body is published as a point cloud (/fleet/cloud, in base_footprint) that
    Nav2's fleet_layer marks in both costmaps, so the planner routes around it even where the lidar
@@ -20,6 +21,8 @@ import time
 
 import numpy as np
 from rclpy.time import Time
+
+import map_merge
 from sensor_msgs.msg import LaserScan, PointCloud2
 from sensor_msgs_py import point_cloud2
 
@@ -75,8 +78,8 @@ def right_of_way(me, other):
 
 
 class Fleet:
-    def __init__(self, node, tf_buffer, nav, peers, me):
-        self.node, self.tf, self.nav, self.peers, self.me = node, tf_buffer, nav, peers, me
+    def __init__(self, node, tf_buffer, nav, peers, me, team=None):
+        self.node, self.tf, self.nav, self.peers, self.me, self.team = node, tf_buffer, nav, peers, me, team
         self.cloud_pub = node.create_publisher(PointCloud2, '/fleet/cloud', 1)
         self.clear_pub = node.create_publisher(LaserScan, '/fleet/clear', 1)
         self.near = []             # other cars on the same map: [{car, x, y, yaw, dist, driving}]
@@ -89,21 +92,32 @@ class Fleet:
     # ---- the other cars, in this car's map frame ---------------------------------
     def others(self):
         nav = self.nav.status()
-        if not nav['running'] or nav['slam_mode'] or not nav['map'] or not nav['pose_set']:
+        slam_mode = nav['slam_mode']
+        if not nav['running'] or not nav['pose_set'] or not (slam_mode or nav['map']):
             return []
-        mine = nav['map']['hash']
+        mine = None if slam_mode else nav['map']['hash']
         out = []
         for p in self.peers.summary():
             st = p['status'] or {}
             nv = st.get('nav') or {}
             if not p['online'] or p['age_s'] is None or p['age_s'] > MAX_AGE_S:
                 continue
-            if not nv.get('running') or nv.get('map_hash') != mine or not nv.get('pose_set') or not nv.get('pose'):
+            if not nv.get('running') or not nv.get('pose_set') or not nv.get('pose'):
                 continue
             x, y, yaw = nv['pose']
-            out.append({'car': p['car'], 'x': x, 'y': y, 'yaw': yaw, 'age_s': p['age_s'],
+            plan = nv.get('plan') or []
+            if slam_mode:          # both exploring: through the lined-up live maps
+                T = self.team.to_mine(p['car']) if self.team and nv.get('slam_mode') else None
+                if T is None:
+                    continue
+                x, y = map_merge.transform(np.array([[x, y]]), T)[0]
+                yaw += T[2]
+                plan = map_merge.transform(np.array(plan, float), T).tolist() if plan else []
+            elif nv.get('map_hash') != mine:
+                continue
+            out.append({'car': p['car'], 'x': float(x), 'y': float(y), 'yaw': yaw, 'age_s': p['age_s'],
                         'driving': nv.get('goal_state') in ('sending', 'active'),
-                        'plan': nv.get('plan') or [],
+                        'plan': plan,
                         'dist': (math.hypot(x - nav['pose'][0], y - nav['pose'][1]) if nav['pose'] else None)})
         return out
 

@@ -15,6 +15,11 @@ nothing; then its whole frontier is skipped. The car is "stuck" only when it nei
 anything for STUCK_S. Goals that need the car to turn around cost extra (TURN_COST), so it keeps going
 roughly the way it faces instead of hunting left and right.
 
+With another car mapping at the same time (team.py, once their live maps are lined up): edges whose
+unmapped side the other car has already mapped are not targets, frontiers near the other car's goal are
+left to it (CLAIM_R), frontiers nearer to it than to this car cost extra (SHARE_COST), and at the end the
+car whose name sorts first also saves the merged map (team_YYYYMMDD_HHMM).
+
 It stops (navigation stopped, SLAM kept so the map can be saved) on: Stop, the joystick or E-stop (they
 cancel the goal), low battery, charging mode, SLAM or navigation stopping, MAX_FAILS useless goals in a
 row, or MAX_TIME.
@@ -26,6 +31,9 @@ from datetime import datetime
 
 import numpy as np
 from geometry_msgs.msg import Twist
+
+import map_merge
+import map_store
 from rclpy.qos import qos_profile_sensor_data
 from scipy import ndimage
 from sensor_msgs.msg import LaserScan
@@ -61,11 +69,16 @@ ESCAPE_MAX = 3           # escapes in a row without any goal succeeding -> stop 
 RETRACE_M = 0.8          # m to drive back along the car's own trail (known to fit) before replanning
 RETRACE_LOOKAHEAD = 0.30 # m, pure pursuit on the trail
 MIN_TURN_R = 0.40        # m, tightest turn of the car
+CLAIM_R = 1.5            # m, frontiers this close to another car's goal are left to it
+SHARE_COST = 1.0         # extra cost per m that a frontier is closer to another car than to this one
 SCAN_TOPIC = '/scan_raw'  # lidar_frame = base_footprint orientation (0 = forward, counter-clockwise)
 
 
-def frontier_goals(grid, res, origin, car_xy, fence_xy, radius, blacklist, failed_centers=(), car_yaw=None):
+def frontier_goals(grid, res, origin, car_xy, fence_xy, radius, blacklist, failed_centers=(), car_yaw=None,
+                   covered=None, claims=()):
     """Frontier clusters and a goal for each. grid: int8 [h, w] (-1 unknown, 0..100), row 0 = min y.
+    covered: bool [h, w], unmapped here but mapped by another car (not worth exploring); claims: other
+    cars [{'pose': [x, y], 'goal': [x, y] or None}] in this frame.
     Returns ([{'goal': [x, y, yaw], 'center': [x, y], 'size': m, 'dist': m}], frontier cells [[x, y], ...])."""
     h, w = grid.shape
     occ = grid >= OCC_MIN
@@ -76,7 +89,8 @@ def frontier_goals(grid, res, origin, car_xy, fence_xy, radius, blacklist, faile
     unknown = ~free & ~occ & (grid < 0)
     to_xy = lambda r, c: (origin[0] + (c + 0.5) * res, origin[1] + (r + 0.5) * res)
     cross = ndimage.generate_binary_structure(2, 1)
-    frontier = free & ndimage.binary_dilation(unknown, structure=cross)
+    todo = unknown if covered is None else unknown & ~covered
+    frontier = free & ndimage.binary_dilation(todo, structure=cross)
 
     d_occ = ndimage.distance_transform_edt(~occ) * res
     d_unk = ndimage.distance_transform_edt(~unknown) * res
@@ -115,6 +129,8 @@ def frontier_goals(grid, res, origin, car_xy, fence_xy, radius, blacklist, faile
             continue
         if any(math.hypot(cx - fx, cy - fy) < FAILED_FRONTIER_R for fx, fy in failed_centers):
             continue
+        if any(c.get('goal') and math.hypot(cx - c['goal'][0], cy - c['goal'][1]) < CLAIM_R for c in claims):
+            continue
         mask = clusters == k + 1
         # goal: a reachable safe cell close to this frontier, the one nearest to the car
         rows, cols = np.nonzero(mask)
@@ -145,20 +161,27 @@ def frontier_goals(grid, res, origin, car_xy, fence_xy, radius, blacklist, faile
         if car_yaw is not None:
             d = math.atan2(y - car_xy[1], x - car_xy[0]) - car_yaw
             turn = abs(math.atan2(math.sin(d), math.cos(d)))
+        share = 0.0
+        for c in claims:     # nearer to another car than to this one: rather its job
+            mine_d = math.hypot(cx - car_xy[0], cy - car_xy[1])
+            share = max(share, mine_d - math.hypot(cx - c['pose'][0], cy - c['pose'][1]))
         out.append({'goal': [round(x, 3), round(y, 3), round(yaw, 3)], 'center': [round(cx, 3), round(cy, 3)],
-                    'size': round(size_m, 2), 'dist': round(float(dcar[i]), 2), 'turn': round(turn, 2)})
+                    'size': round(size_m, 2), 'dist': round(float(dcar[i]), 2), 'turn': round(turn, 2),
+                    'share': round(share, 2)})
         sel = mask[rows_all, cols_all]
         for r, c in list(zip(rows_all[sel], cols_all[sel]))[::3]:
             x_, y_ = to_xy(r, c)
             cells.append([round(x_, 2), round(y_, 2)])
     # best first: close, ahead of the car, large
-    out.sort(key=lambda f: f['dist'] + TURN_COST * f['turn'] - 0.5 * min(f['size'], 3.0))
+    out.sort(key=lambda f: f['dist'] + TURN_COST * f['turn'] - 0.5 * min(f['size'], 3.0) + SHARE_COST * f['share'])
     return out, cells
 
 
 class Explorer:
     def __init__(self, node, slam, nav, car='car'):
         self.node, self.slam, self.nav, self.car = node, slam, nav, car
+        self.team = None           # team.Team, set by the web server (mapping together)
+        self.team_saved_as = None
         self.log = node.get_logger()
         self.lock = threading.Lock()
         self.state = 'off'      # off | starting | exploring | returning | done | stopped
@@ -218,7 +241,7 @@ class Explorer:
             self.send_xy = None
             self.fails = self.empty_checks = self.quick_retries = 0
             self.goal_sent_at = None
-            self.saved_as = None
+            self.saved_as = self.team_saved_as = None
             self.started_at = time.monotonic()
             self.state = 'starting'
             self.message = 'starting mapping and navigation (~30 s)'
@@ -506,9 +529,10 @@ class Explorer:
         if g is None or pose is None:
             return
         grid, res, origin = g
+        covered, claims = self._team_view(grid.shape, res, origin)
         fronts, cells = frontier_goals(grid, res, origin, pose[:2], self.home[:2], self.radius,
                                        self.blacklist + self.visited, self.failed_centers,
-                                       car_yaw=pose[2])
+                                       car_yaw=pose[2], covered=covered, claims=claims)
         self.frontiers, self.cells = fronts, cells
         if not fronts:
             self.empty_checks += 1
@@ -573,9 +597,10 @@ class Explorer:
         if g is None or pose is None:
             return
         grid, res, origin = g
+        covered, claims = self._team_view(grid.shape, res, origin)
         fronts, cells = frontier_goals(grid, res, origin, pose[:2], self.home[:2], self.radius,
                                        self.blacklist + self.visited, self.failed_centers,
-                                       car_yaw=pose[2])
+                                       car_yaw=pose[2], covered=covered)
         self.frontiers, self.cells = fronts, cells
         gx, gy = self.goal[0], self.goal[1]
         if not any(math.hypot(f['goal'][0] - gx, f['goal'][1] - gy) < 1.0 for f in fronts):
@@ -583,18 +608,58 @@ class Explorer:
             self.nav.cancel('frontier mapped, next one')
             self.visited.append(self.goal[:2])
             self.goal = None
+            return
+        # both cars chose the same frontier: the one whose name sorts first keeps it
+        c = self.goal_center
+        for cl in claims:
+            if c and cl.get('goal') and cl['car'] < self.car and math.hypot(c[0] - cl['goal'][0], c[1] - cl['goal'][1]) < CLAIM_R:
+                self.own_cancel = True
+                self.nav.cancel(f'{cl["car"]} is mapping there, next one')
+                self.goal = None
+                return
+
+    def _team_view(self, shape, res, origin):
+        if self.team is None or not self.team.matched():
+            return None, ()
+        try:
+            return self.team.covered(shape, res, origin), self.team.claims()
+        except Exception as exc:
+            self.log.warn(f'team view: {exc}')
+            return None, ()
+
+    def _save_team_map(self):
+        """Merged map of all matched cars; saved by the car whose name sorts first."""
+        if self.team is None or self.slam.grid is None:
+            return None
+        mates = self.team.matched()
+        if not mates or any(m.car < self.car for m in mates):
+            return None
+        from team import grid_from_msg
+        merged = self.team.merged_grid(grid_from_msg(self.slam.grid))
+        name = datetime.now().strftime('team_%Y%m%d_%H%M')
+        if name in map_store.names():
+            return None
+        map_store.save_copy(name, map_merge.to_png(merged), map_merge.yaml_text(name, merged))
+        self.log.info(f'team map saved as "{name}" ({self.car} + ' + ', '.join(m.car for m in mates) + ')')
+        return name
 
     def _finish(self):
         self.mapped_m2 = self._known_m2()
         name = datetime.now().strftime('explore_%Y%m%d_%H%M_') + self.car
         ok, msg = self.slam.save(name)
+        try:
+            self.team_saved_as = self._save_team_map()
+        except Exception as exc:
+            self.team_saved_as = None
+            self.log.warn(f'team map not saved: {exc}')
         self.saved_as = name if ok else None
         if self.nav.running() and self.nav.slam_mode:
             self.nav.stop()
         self.state = 'done'
         left = f' ({len(self.failed_centers)} edges not reachable)' if self.failed_centers else ''
         self.message = (f'map complete{left}, saved as "{name}"' if ok else f'map complete, but saving failed ({msg}): '
-                        'press Save map') + '; mapping still running'
+                        'press Save map') + (f'; team map "{self.team_saved_as}"' if self.team_saved_as else '') + \
+            '; mapping still running'
         self.goal = None
         self.log.info(self.message)
 
@@ -615,4 +680,6 @@ class Explorer:
             'mapped_m2': round(self._known_m2() if self.active() else self.mapped_m2, 1),
             'elapsed_s': round(time.monotonic() - self.started_at) if self.started_at and self.active() else None,
             'saved_as': self.saved_as,
+            'team_saved_as': self.team_saved_as,
+            'team': self.team.status() if self.team else [],
         }

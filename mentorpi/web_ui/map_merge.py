@@ -27,11 +27,15 @@ FREE, OCC, UNK = 0, 100, 255
 COARSE_RES = 0.10
 ROT_STEP_DEG = 2.0
 TOP_K = 6
+CLASH_W = 0.5            # coarse search: weight of walls landing on the other map's open floor
 NEAR_M = 0.10            # a wall of b within this of a wall of a counts as agreeing
 MIN_WALL_CELLS = 40
 MIN_AGREE = 0.80
 MAX_CLASH = 0.12
 MIN_OVERLAP = 0.15       # share of walls inside the part the other map has seen (larger of both ways)
+MIN_SHARED_FREE_M2 = 1.5 # floor both maps saw: maps that only touch along a wall share none
+MIN_SPREAD_M = 0.25      # agreeing walls must extend in two directions: one straight wall can't fix the
+                         # shift along it (smaller spread of the agreeing wall points, std in m)
 
 
 # ---- map files ------------------------------------------------------------------------
@@ -137,9 +141,16 @@ def quality(a, b, T):
         d = np.full(len(walls), 99.0); d[ok] = sc.dist[r[ok], c[ok]]
         seen = v != UNK
         n = max(int(seen.sum()), 1)
-        out[tag] = {'agree': float(((d <= NEAR_M) & seen).sum() / n),
+        agree = (d <= NEAR_M) & seen
+        out[tag] = {'agree': float(agree.sum() / n),
                     'clash': float(((v == FREE) & (d > 2 * NEAR_M)).sum() / n),
                     'overlap': float(seen.mean()) if len(walls) else 0.0}
+        if tag == 'ab':
+            pa = walls[agree]
+            out['spread_m'] = (float(math.sqrt(max(np.linalg.eigvalsh(np.cov(pa.T))[0], 0.0)))
+                               if len(pa) >= 3 else 0.0)
+    free_b = transform(cells_xy(b, b['data'] == FREE), T)
+    out['shared_free_m2'] = float((lookup(a, free_b) == FREE).sum() * b['res'] ** 2)
     return out
 
 
@@ -167,13 +178,21 @@ def align(a, b, rot_step_deg=ROT_STEP_DEG):
     origin = ca - n * COARSE_RES / 2
     A = cv2.GaussianBlur(_coarse_image(a_walls, origin, (n, n), COARSE_RES), (5, 5), 1.0)
     FA = np.fft.rfft2(A)
+    # open floor (shrunk by a cell so walls next to it don't count): a wall landing there is a clash
+    a_free = cells_xy(a, cv2.erode((a['data'] == FREE).astype(np.uint8), np.ones((5, 5), np.uint8)) > 0)
+    FAF = np.fft.rfft2(_coarse_image(a_free, origin, (n, n), COARSE_RES))
+    b_free_all = cells_xy(b, cv2.erode((b['data'] == FREE).astype(np.uint8), np.ones((5, 5), np.uint8)) > 0)
+    A_walls_img = np.fft.rfft2(_coarse_image(a_walls, origin, (n, n), COARSE_RES))
     cands = []
     for deg in np.arange(0, 360, rot_step_deg):
         yaw = math.radians(deg)
         # rotate b about its centre, put the centre at a's centre, then find the best shift
         pts = transform(b_walls - cb, (0, 0, yaw)) + ca
-        B = _coarse_image(pts, origin, (n, n), COARSE_RES)
-        corr = np.fft.irfft2(FA * np.conj(np.fft.rfft2(B)), s=(n, n))
+        FB = np.fft.rfft2(_coarse_image(pts, origin, (n, n), COARSE_RES))
+        bf = transform(b_free_all - cb, (0, 0, yaw)) + ca
+        FBF = np.fft.rfft2(_coarse_image(bf, origin, (n, n), COARSE_RES))
+        # walls on walls, minus b's walls on a's floor and a's walls on b's floor
+        corr = np.fft.irfft2(FA * np.conj(FB) - CLASH_W * (FAF * np.conj(FB) + A_walls_img * np.conj(FBF)), s=(n, n))
         k = int(np.argmax(corr))
         dr, dc = divmod(k, n)
         dr = dr - n if dr > n // 2 else dr
@@ -191,13 +210,23 @@ def align(a, b, rot_step_deg=ROT_STEP_DEG):
     return best, quality(a, b, best)
 
 
+def refine(a, b, T):
+    """Small corrections around a known transform (live maps that grew a little): ~10x faster than align."""
+    b_walls = cells_xy(b, b['data'] == OCC)
+    if len(b_walls) < MIN_WALL_CELLS:
+        return None, None
+    T, _, _ = _refine(_Scorer(a), b_walls, T)
+    return T, quality(a, b, T)
+
+
 def good_match(q):
     """Is quality() q good enough to merge?"""
     if not q:
         return False
     return (min(q['ab']['agree'], q['ba']['agree']) >= MIN_AGREE
             and max(q['ab']['clash'], q['ba']['clash']) <= MAX_CLASH
-            and max(q['ab']['overlap'], q['ba']['overlap']) >= MIN_OVERLAP)
+            and max(q['ab']['overlap'], q['ba']['overlap']) >= MIN_OVERLAP
+            and q['shared_free_m2'] >= MIN_SHARED_FREE_M2 and q['spread_m'] >= MIN_SPREAD_M)
 
 
 def _refine(scorer, b_walls, T):

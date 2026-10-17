@@ -123,6 +123,7 @@ Manual start without systemd (in this order):
 │   ├── peer_manager.py      status exchange with the other cars (fleet.env)
 │   ├── fleet.py             cars avoid each other: costmap marks + right of way
 │   ├── map_merge.py         line up two maps of the same place and merge them
+│   ├── team.py              mapping together: live maps lined up, frontiers split
 │   ├── explore_manager.py   autonomous mapping (frontier exploration)
 │   ├── depth_obstacles.py   depth camera obstacles (/depth/scan) + comparison with the lidar
 │   ├── map_store.py         saved maps + content hash (same map on two cars?)
@@ -241,7 +242,11 @@ The match is judged both ways:
 - **Agree:** the share of walls that land on the other map's walls.
 - **Clash:** the share that land on its open floor.
 
-It merges only when agree is ≥ 80% both ways and clash is ≤ 12%.
+It merges only when all of these hold:
+- agree is ≥ 80% both ways;
+- clash is ≤ 12%;
+- the two maps share at least 1.5 m² of floor;
+- the agreeing walls extend in two directions.
 
 On the page: pick two maps, **Line up**, check the overlay (blue: first map, red: second, purple: both),
 then **Save merged**. The merged map keeps the first map's position and direction, and syncs to the
@@ -467,6 +472,42 @@ limit each stop it. Navigation then stops and mapping keeps running, so the map 
 a stair edge, so the floor past it looks free. The depth camera looks straight ahead, and on a glossy
 floor it gets no return from the floor at all. Block stairs, or keep the distance limit inside the
 safe area.
+
+### Mapping together (two cars explore at once)
+
+Tick **together** next to 🧭 Explore. Every other online car that is idle starts exploring too, and
+**Stop exploring** stops them all. Place the cars about 1 m apart, so their first maps overlap.
+`web_ui/team.py` does the rest:
+
+- **Live maps lined up:** each car keeps its own SLAM map in its own frame. Every 10 s it fetches the
+  other car's live map (`GET /api/slam/grid`) and lines it up with its own, the same way as Merge.
+  A match is used only once two checks in a row agree (within 30 cm and 8°). Later checks only
+  refine it, which takes well under a second.
+  - A full search takes about 5 s and runs at most every 20 s while the maps don't match yet. It runs
+    in a separate low-priority process, so it never slows the driving relay or the sensors.
+  - On the page: "jpi2: matched" next to the map, and the other car drawn in blue in this car's map.
+- **Work split:**
+  - An edge whose unmapped side the other car has already mapped is not a target.
+  - Frontiers within 1.5 m of the other car's goal are left to it.
+  - Frontiers nearer to the other car than to this one cost extra.
+  - If both cars picked the same frontier, the car whose name sorts first keeps it.
+- **Avoiding each other** while exploring: costmap marks and right of way (previous section), through
+  the lined-up maps.
+- **At the end** each car saves its own map. The car whose name sorts first also saves the merged map
+  (`team_YYYYMMDD_HHMM`).
+
+How well maps line up, from tests that split one real map into two halves (one rotated into its own
+frame):
+- With 1 m or more of overlap they line up within 2 cm and 0.3°.
+- With 0.5 m of overlap the result is rejected rather than wrong.
+
+A match also needs:
+- At least 1.5 m² of floor that both maps saw.
+- Matching walls that extend in two directions, not just one straight wall.
+
+This rejects maps that only touch along a wall. Real pairs share 13–31 m² of floor; wrong fits shared
+under 0.1 m². Test: `tests/run.sh test_team.py`. Not yet tried with two cars driving.
+
 ### What you need
 - The target car: Raspberry Pi 5 MentorPi M1 (Ackermann), with the same USB devices
   (STM32 controller `1a86:55d4`, MS200 lidar `1a86:7523`, HP60C camera `3482:6723`).

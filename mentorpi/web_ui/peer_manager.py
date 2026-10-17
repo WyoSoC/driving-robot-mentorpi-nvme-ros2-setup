@@ -128,6 +128,21 @@ class PeerManager:
             'status': p.status,
         } for p in self.peers]
 
+    def get(self, car, path, timeout=TIMEOUT_S, **query):
+        """GET path on another car's web server (bytes)."""
+        p = self.find(car)
+        if not p:
+            raise LookupError(f'unknown car {car}')
+        return self._get(p.url(path, **query), timeout=timeout)
+
+    def post(self, car, path, timeout=TIMEOUT_S, **query):
+        p = self.find(car)
+        if not p:
+            raise LookupError(f'unknown car {car}')
+        req = urllib.request.Request(p.url(path, **query), data=b'', method='POST')
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.read()
+
     def map_png(self, car, name):
         p = self.find(car)
         if not p:
