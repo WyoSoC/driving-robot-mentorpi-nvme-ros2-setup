@@ -224,9 +224,10 @@ with the IMU heading into `/odom` (the web UI trail). So distances follow the co
 wheels slip or the car is slower than asked), turns follow the gyro.
 
 `motor_speed_map` ([real, sent, ...] m/s, measured by `speedmap`) corrects the motor commands so a
-commanded speed is the real speed and speed limits mean what they say (car 2: real = 0.89-0.98 x
-sent). The motors (JGA27-310R, 20:1, 450 RPM) have encoders and the board runs a speed loop; car 1
-runs away above ~0.12 m/s sent (suspected encoder wiring), so its map only covers slow speeds.
+commanded speed is the real speed and speed limits mean what they say (both cars: real = 0.89-0.98 x
+sent, steady up to 0.2 m/s). The motors (JGA27-310R, 20:1, 450 RPM) have encoders and the board runs
+a speed loop. (An apparent "runaway" was a lidar artefact: the narrow sector ahead saw past the wall
+when the heading drifted; the tool now drops impossible jumps.)
 Fallback without a map: `motor_speed_factor` (real / commanded). Steering centre: the board's PWM
 servo offset, per car in `calibration/servo_config.yaml` (key 3 = steering, us, -100..100), loaded
 at controller start; `steer` measures the heading drift per metre with the IMU and sets it. `steer_gain`
