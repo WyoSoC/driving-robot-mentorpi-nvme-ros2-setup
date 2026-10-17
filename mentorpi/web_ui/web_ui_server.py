@@ -25,6 +25,12 @@
   cars poll), GET /api/fleet = this car + the latest status of every other car, GET /api/maps = maps here
   and on the other cars, GET /api/maps/file?name=&ext=png|yaml (a map for another car to copy).
   A map of another car: GET /api/nav/map.png?name=&car=, POST /api/nav/start?map=&car= copies it here first.
+- Merging maps (map_merge.py): POST /api/maps/align?a=&b= lines map b up with map a (rotation + shift,
+  ~3 s) and says whether they match; GET /api/maps/merge.png?a=&b= = overlay picture; POST
+  /api/maps/merge?a=&b=&name= saves the combined map (only for a good match).
+- Cars avoiding each other (fleet.py): other cars on the same map go into Nav2's costmaps (/fleet/cloud) and
+  a right-of-way rule pauses this car's goal while another driving car is in its way. GET /api/nav has
+  "fleet" (cars nearby, who this car is waiting for).
 
 /app/cmd_vel contract (odom_publisher_node, MentorPi_Acker):
   linear.x  = speed in m/s
@@ -50,10 +56,12 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
 from std_msgs.msg import String, UInt16
 
+import map_merge
 import map_store
 from battery_estimator import BatteryEstimator
 from depth_obstacles import DepthObstacles
 from explore_manager import Explorer
+from fleet import Fleet
 from nav_manager import NavManager
 from peer_manager import PeerManager
 from slam_manager import SlamManager
@@ -111,6 +119,29 @@ class WebBridge(Node):
         self.depth_obs = DepthObstacles(self, self.slam.tf)   # /depth/scan + /depth/compare
         self.explorer = Explorer(self, self.slam, self.nav, CAR_NAME)
         self.peers = PeerManager(CAR_NAME, PEERS, self.get_logger())
+        self.fleet = Fleet(self, self.slam.tf, self.nav, self.peers, CAR_NAME)
+        self.merge_lock = threading.Lock()
+        self.merge_cache = {}      # (hash a, hash b) -> align result
+
+    def align_maps(self, a, b):
+        """Line map b up with map a (cached by content). Returns (grid a, grid b, result dict)."""
+        grids = []
+        for n in (a, b):
+            if n not in map_store.names():
+                raise LookupError(f'no saved map "{n}"')
+            m = map_store.meta(n)
+            grids.append((m['hash'], map_merge.from_png(map_store.png_bytes(n), m['resolution'], m['origin'])))
+        key = (grids[0][0], grids[1][0])
+        with self.merge_lock:
+            res = self.merge_cache.get(key)
+            if res is None:
+                t0 = time.time()
+                T, q = map_merge.align(grids[0][1], grids[1][1])
+                res = {'a': a, 'b': b, 'ok': map_merge.good_match(q), 'quality': q,
+                       'T': [round(T[0], 3), round(T[1], 3), round(T[2], 4)] if T else None,
+                       'seconds': round(time.time() - t0, 1)}
+                self.merge_cache[key] = res
+        return grids[0][1], grids[1][1], res
 
     def self_status(self):
         """What the other cars see of this one (GET /api/self)."""
@@ -127,7 +158,8 @@ class WebBridge(Node):
             'speed': round(self.speed, 3),
             'nav': {k: nav[k] for k in ('running', 'map_name', 'pose', 'pose_set', 'goal', 'goal_state', 'plan',
                                         'feedback')}
-                   | {'map_hash': nav['map']['hash'] if nav['map'] else None},
+                   | {'map_hash': nav['map']['hash'] if nav['map'] else None,
+                      'yield_to': self.fleet.yield_to},
             'slam': slam_on,
             'maps': [{k: m[k] for k in ('name', 'hash', 'resolution', 'origin')} for m in map_store.listing()],
         }
@@ -154,7 +186,7 @@ class WebBridge(Node):
         self.get_logger().info(f'charging mode {"on" if on else "off"} requested')
 
     def on_cmd(self, msg):
-        if (msg.linear.x or msg.angular.z) and self.nav.goal_active():
+        if (msg.linear.x or msg.angular.z) and (self.nav.goal_active() or self.nav.goal_state == 'yielding'):
             self.nav.cancel('goal canceled: manual driving')   # the person at the joystick wins
             self.get_logger().info('navigation goal canceled by manual driving')
         out = Twist()
@@ -232,7 +264,7 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
             png = slam.png
             return self._send(200, png, 'image/png') if png else self._send(404, {'error': 'no map yet'})
         if url.path == '/api/nav':
-            return self._send(200, self.node.nav.status())
+            return self._send(200, self.node.nav.status() | {'fleet': self.node.fleet.status()})
         if url.path == '/api/depth':
             return self._send(200, self.node.depth_obs.compare)
         if url.path == '/api/self':
@@ -241,6 +273,15 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
             return self._send(200, {'car': CAR_NAME, 'peers': self.node.peers.summary()})
         if url.path == '/api/maps':
             return self._send(200, self.maps_everywhere())
+        if url.path == '/api/maps/merge.png':
+            q = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
+            try:
+                ga, gb, res = self.node.align_maps(q.get('a', ''), q.get('b', ''))
+            except LookupError as exc:
+                return self._send(404, {'error': str(exc)})
+            if not res['T']:
+                return self._send(404, {'error': 'too few walls to line up'})
+            return self._send(200, map_merge.overlay_png(ga, gb, res['T']), 'image/png')
         if url.path == '/api/maps/file':
             q = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
             name, ext = q.get('name', ''), q.get('ext', '')
@@ -294,6 +335,27 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
             except OSError as exc:
                 return self._send(500, {'ok': False, 'message': f'cannot write request: {exc}'})
             return self._send(200, {'ok': True})
+        if url.path in ('/api/maps/align', '/api/maps/merge'):
+            q = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
+            try:
+                ga, gb, res = self.node.align_maps(q.get('a', ''), q.get('b', ''))
+            except LookupError as exc:
+                return self._send(404, {'ok': False, 'message': str(exc)})
+            except Exception as exc:
+                return self._send(500, {'ok': False, 'message': f'alignment failed: {exc}'})
+            if url.path == '/api/maps/align':
+                return self._send(200, res)
+            name = q.get('name', '')
+            if not map_store.NAME_RE.match(name):
+                return self._send(400, {'ok': False, 'message': 'name: letters, digits, - and _ (max 40)'})
+            if name in map_store.names():
+                return self._send(400, {'ok': False, 'message': f'a map "{name}" already exists'})
+            if not res['ok']:
+                return self._send(400, {'ok': False, 'message': 'the maps don\'t match well enough to merge'})
+            merged = map_merge.merge(ga, gb, res['T'])
+            map_store.save_copy(name, map_merge.to_png(merged), map_merge.yaml_text(name, merged))
+            self.node.get_logger().info(f'maps "{res["a"]}" + "{res["b"]}" merged as "{name}"')
+            return self._send(200, {'ok': True, 'message': f'saved "{name}" ({res["a"]} + {res["b"]})'})
         if url.path.startswith('/api/nav/'):
             q = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
             nav, action = self.node.nav, url.path[len('/api/nav/'):]

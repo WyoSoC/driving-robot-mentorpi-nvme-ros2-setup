@@ -5,6 +5,8 @@
   together with SLAM (both own the map -> odom transform).
 - set_pose(x, y, yaw): AMCL's starting guess ("Set position" on the page).
 - go(x, y, yaw) / cancel(): NavigateToPose goal; feedback (distance left, recoveries) for the page.
+- pause(reason) / resume(): right of way (fleet.py): the goal is taken back from Nav2 (state "yielding",
+  car stopped) and sent again later, so Nav2 doesn't count the wait as being stuck.
 - Gate: Nav2's output (/nav/cmd_vel, after its collision monitor) reaches the motors (/cmd_vel, speed +
   turn rate, which odom_publisher clamps to 0.2 m/s and 0.5 rad/s) only while a goal is active and
   fresh. The page's E-stop and any joystick input cancel the goal; leaving it stops the car.
@@ -47,7 +49,7 @@ class NavManager:
         self.message = ''
         self.goal = None           # [x, y, yaw]
         self.goal_handle = None
-        self.goal_state = 'idle'   # idle | sending | active | succeeded | aborted | canceled | rejected
+        self.goal_state = 'idle'   # idle | sending | active | yielding | succeeded | aborted | canceled | rejected
         self.feedback = {}
         self.plan = []
         self.pose = None
@@ -200,7 +202,7 @@ class NavManager:
     def on_goal_response(self, fut, seq):
         handle = fut.result()
         if seq != self.goal_seq or self.goal_state != 'sending':
-            if handle.accepted and seq != self.goal_seq:
+            if handle.accepted and seq != self.goal_seq and self.goal_state in ('sending', 'active'):
                 pass   # a newer goal preempts it in bt_navigator
             elif handle.accepted:
                 handle.cancel_goal_async()   # canceled before it was accepted
@@ -236,11 +238,31 @@ class NavManager:
         if handle is not None:
             handle.cancel_goal_async()
             self.message = reason
-        if self.goal_state in ('sending', 'active'):
+        if self.goal_state in ('sending', 'active', 'yielding'):
             self.goal_state = 'canceled'
         self.goal_handle = None
         self.stop_motors()
         return True, reason
+
+    def pause(self, reason):
+        """Take the goal back from Nav2 and stop; resume() sends it again."""
+        if not self.goal_active():
+            return
+        handle = self.goal_handle
+        self.goal_seq += 1             # answers for the paused goal are ignored from now on
+        if handle is not None:
+            handle.cancel_goal_async()
+        self.goal_handle, self.goal_state, self.message = None, 'yielding', reason
+        self.stop_motors()
+
+    def resume(self):
+        if self.goal_state != 'yielding' or not self.goal:
+            return False, 'nothing to resume'
+        self.goal_state = 'idle'
+        ok, msg = self.go(*self.goal)
+        if not ok:
+            self.goal_state = 'yielding'   # try again on the next tick
+        return ok, msg
 
     # ---- the gate --------------------------------------------------------------
     def goal_active(self):

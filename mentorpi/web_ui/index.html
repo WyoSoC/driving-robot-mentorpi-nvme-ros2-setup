@@ -263,7 +263,7 @@
       <kbd>Space</kbd> = E-stop. The car stops if this page loses connection.</div>
   </section>
   <section class="panel" id="mapPanel">
-    <h2>Map <span class="right"><span class="tabs" id="mapTabs"><button data-mode="slam" class="active">Mapping</button><button data-mode="nav">Navigate</button></span>
+    <h2>Map <span class="right"><span class="tabs" id="mapTabs"><button data-mode="slam" class="active">Mapping</button><button data-mode="nav">Navigate</button><button data-mode="merge">Merge</button></span>
       <span class="pill" id="slamState"></span></span></h2>
     <div class="slam-bar" id="navBar" hidden>
       <select id="navMap" title="Saved maps on this car and on the other cars (copied here when navigation starts)"></select>
@@ -273,6 +273,15 @@
       <button class="btn" id="navGoTo" title="Click the destination, drag in the direction to arrive">🎯 Go to</button>
       <button class="btn" id="navCancel">Cancel goal</button>
       <span class="slam-info" id="navMsg"></span>
+    </div>
+    <div class="slam-bar" id="mergeBar" hidden>
+      <select id="mergeA" title="Base map: the merged map keeps its position and direction"></select>
+      <span>+</span>
+      <select id="mergeB" title="Map to line up with the base map"></select>
+      <button class="btn" id="mergeCheck">Line up</button>
+      <input id="mergeName" placeholder="merged map name" maxlength="40">
+      <button class="btn" id="mergeSave" disabled>Save merged</button>
+      <span class="slam-info" id="mergeMsg"></span>
     </div>
     <div class="slam-bar" id="slamBar">
       <button class="btn" id="slamStart">Start mapping</button>
@@ -1028,6 +1037,7 @@ async function slamPoll() {
 }
 function drawSlam() {
   if (mapMode === 'nav') return drawNav();
+  if (mapMode === 'merge') return drawMerge();
   const { ctx, w, h } = prepCanvas($('slamMap'));
   const st = slam.st, m = st && st.map, img = slam.img;
   if (!m || !img) {
@@ -1093,7 +1103,8 @@ async function fleetPoll() {
     if (!p.online) txt = p.age_s != null ? `offline · last seen ${fmtAge(p.age_s)} ago` : 'offline';
     else {
       txt = (b.soc != null ? `${b.soc}%` + (b.state === 'charging' ? '⚡' : '') : '--%') + ' · ' + (PEER_MODE[st.mode] || st.mode || '?');
-      if (st.mode === 'navigating') txt += ` ${nv.map_name || ''}` + ((nv.goal_state === 'active' || nv.goal_state === 'sending') ? ' → goal' : '');
+      if (st.mode === 'navigating') txt += ` ${nv.map_name || ''}` + ((nv.goal_state === 'active' || nv.goal_state === 'sending') ? ' → goal'
+        : nv.goal_state === 'yielding' ? ` · waiting for ${nv.yield_to || 'a car'}` : '');
     }
     const host = p.addr.split(':')[0], port = p.addr.split(':')[1] || '8000';
     const tip = p.online ? `${p.car}: ${b.v != null ? b.v.toFixed(2) + ' V, ' : ''}${st.mode}` +
@@ -1116,9 +1127,9 @@ const nav = { st: null, img: null, imgName: null, tool: null, drag: null, view: 
 function setMapMode(m) {
   mapMode = m;
   for (const b of $('mapTabs').children) b.classList.toggle('active', b.dataset.mode === m);
-  $('slamBar').hidden = m !== 'slam'; $('navBar').hidden = m !== 'nav';
+  $('slamBar').hidden = m !== 'slam'; $('navBar').hidden = m !== 'nav'; $('mergeBar').hidden = m !== 'merge';
   setTool(null);
-  if (m === 'nav') navPoll(); else slamPoll();
+  if (m === 'nav') navPoll(); else if (m === 'merge') mergeLists(); else slamPoll();
   drawSlam();
 }
 $('mapTabs').addEventListener('click', e => { if (e.target.dataset.mode) setMapMode(e.target.dataset.mode); });
@@ -1146,9 +1157,78 @@ $('navStart').onclick = () => {
 $('navMap').onchange = () => { nav.preview = null; drawNav(); navPreview(); };
 async function mapsPoll() {
   try { nav.maps = (await (await fetch('/api/maps')).json()).maps || []; } catch { return; }
+  mergeLists();
   navPoll();
 }
 setInterval(mapsPoll, 5000); mapsPoll();
+
+// ---------- Merging two maps (map_merge.py) ----------
+// Line up: finds the rotation + shift that puts map B on map A, shows both (A blue, B red, both purple)
+// and whether they match well enough; Save merged stores A + B as one map (synced to the other cars).
+const merge = { img: null, res: null };
+function mergeLists() {
+  const local = nav.maps.filter(m => m.local).map(m => m.name);
+  for (const id of ['mergeA', 'mergeB']) {
+    const sel = $(id), keep = sel.value;
+    const want = local.join('|');
+    if (sel.dataset.list !== want) {
+      sel.innerHTML = local.map(n => `<option>${esc(n)}</option>`).join('');
+      sel.dataset.list = want;
+      sel.value = local.includes(keep) ? keep : (id === 'mergeB' && local.length > 1 ? local[1] : local[0] || '');
+    }
+  }
+  if (mapMode === 'merge') {
+    $('slamInfo').textContent = 'Two maps of the same place (from either car or different runs) are lined up ' +
+      'by their walls. Blue: first map, red: second, purple: walls both saw. Saving keeps the first map\'s ' +
+      'position and direction. Maps from the other car are copied here automatically.';
+    if (!merge.res) $('slamState').textContent = '';
+  }
+}
+function mergeQ() { return `?a=${encodeURIComponent($('mergeA').value)}&b=${encodeURIComponent($('mergeB').value)}`; }
+for (const id of ['mergeA', 'mergeB']) $(id).onchange = () => { merge.img = merge.res = null; $('mergeSave').disabled = true;
+  $('mergeMsg').textContent = ''; $('slamState').textContent = ''; drawMerge(); };
+$('mergeCheck').onclick = async () => {
+  if ($('mergeA').value === $('mergeB').value) { $('mergeMsg').textContent = 'pick two different maps'; return; }
+  $('mergeMsg').textContent = 'lining up… (a few seconds)'; $('mergeCheck').disabled = true;
+  let j;
+  try { j = await (await fetch('/api/maps/align' + mergeQ(), { method: 'POST' })).json(); }
+  catch (e) { j = { message: String(e) }; }
+  $('mergeCheck').disabled = false;
+  if (!j.quality) { $('mergeMsg').textContent = j.message || 'too few walls to line up'; return; }
+  merge.res = j;
+  const q = j.quality, agree = Math.min(q.ab.agree, q.ba.agree), clash = Math.max(q.ab.clash, q.ba.clash);
+  $('mergeMsg').textContent = `${j.ok ? 'match' : 'no match'} · walls agree ${Math.round(agree * 100)}%, ` +
+    `on open floor ${Math.round(clash * 100)}% · moved ${Math.hypot(j.T[0], j.T[1]).toFixed(2)} m, ` +
+    `turned ${Math.round(j.T[2] * 180 / Math.PI)}° · ${j.seconds} s`;
+  $('slamState').textContent = j.ok ? 'match' : 'no match';
+  $('slamState').style.color = j.ok ? 'var(--ok)' : 'var(--warn)';
+  $('mergeSave').disabled = !j.ok;
+  if (!$('mergeName').value) $('mergeName').value = `merged_${$('mergeA').value}`.slice(0, 40);
+  const img = new Image();
+  img.onload = () => { merge.img = img; drawMerge(); };
+  img.src = '/api/maps/merge.png' + mergeQ();
+};
+$('mergeSave').onclick = async () => {
+  const name = $('mergeName').value.trim();
+  let j;
+  try { j = await (await fetch('/api/maps/merge' + mergeQ() + `&name=${encodeURIComponent(name)}`, { method: 'POST' })).json(); }
+  catch (e) { j = { message: String(e) }; }
+  $('mergeMsg').textContent = j.message || '';
+  if (j.message) log(`Merge: ${j.message}`);
+  if (j.ok) mapsPoll();
+};
+function drawMerge() {
+  const { ctx, w, h } = prepCanvas($('slamMap'));
+  const img = merge.img;
+  if (!img) {
+    ctx.fillStyle = C.dim; ctx.font = '13px system-ui';
+    ctx.fillText('Pick two maps and press Line up', 12, 22);
+    return;
+  }
+  const k = Math.min(w / img.width, h / img.height);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(img, (w - img.width * k) / 2, (h - img.height * k) / 2, img.width * k, img.height * k);
+}
 function navPreview() {   // when not navigating: show the picked map (here or on another car)
   const m = selectedMap();
   if (!m || (nav.st && nav.st.running)) return;
@@ -1197,7 +1277,8 @@ async function navPoll() {
   sel.value = st.running ? `${fleet.car}|${st.map_name}` : (vals.includes(keep) ? keep : vals[0] || '');
   sel.disabled = st.running;
   const pick = selectedMap();
-  const active = st.goal_state === 'active' || st.goal_state === 'sending';
+  const yielding = st.goal_state === 'yielding';
+  const active = st.goal_state === 'active' || st.goal_state === 'sending' || yielding;
   $('navStart').disabled = st.running || !pick || (!pick.local && !pick.online) || (slam.st && slam.st.running);
   $('navStop').disabled = !st.running;
   $('navSetPose').disabled = !st.running; $('navGoTo').disabled = !st.running || !st.pose_set;
@@ -1209,8 +1290,11 @@ async function navPoll() {
         'something close; E-STOP or touching the joystick cancels the goal. Speed ≤ 0.2 m/s.'
       : 'Drive with a map saved in Mapping mode (on this car or another one). Start navigation, set the car\'s ' +
         'position, then pick a goal.';
-    if (fleet.peers.length) $('slamInfo').textContent += ' Blue: other cars on the same map.';
-    $('slamState').textContent = !st.running ? '' : active ? 'driving to goal'
+    if (fleet.peers.length) $('slamInfo').textContent += ' Blue: other cars on the same map; this car plans ' +
+      'around them, and stops while a driving car is in its way (jpi1 goes first when both are).';
+    const fl = st.fleet || {};
+    $('slamState').textContent = !st.running ? '' : yielding ? `waiting for ${fl.yield_to || 'another car'} to pass`
+      : active ? 'driving to goal'
       : st.pose_set ? `ready · ${st.map_name}` : `starting · ${st.map_name}`;
     $('slamState').style.color = active ? 'var(--warn)' : st.running ? 'var(--ok)' : '';
     if (!nav.tool) {
@@ -1267,7 +1351,7 @@ function drawNav() {
     st.plan.forEach((p, i) => { const [cx, cy] = v.toC(p[0], p[1]); i ? ctx.lineTo(cx, cy) : ctx.moveTo(cx, cy); });
     ctx.stroke();
   }
-  if (st.goal && (st.goal_state === 'active' || st.goal_state === 'sending')) {
+  if (st.goal && ['active', 'sending', 'yielding'].includes(st.goal_state)) {
     const [cx, cy] = v.toC(st.goal[0], st.goal[1]);
     arrow(ctx, cx, cy, st.goal[2], 11, '#3fb950', true);
   }
@@ -1299,7 +1383,7 @@ function drawPeers(ctx, v) {   // other cars navigating on this same map (same c
       nv.plan.forEach((q, i) => { const [cx, cy] = v.toC(q[0], q[1]); i ? ctx.lineTo(cx, cy) : ctx.moveTo(cx, cy); });
       ctx.stroke(); ctx.restore();
     }
-    if (p.online && nv.goal && (nv.goal_state === 'active' || nv.goal_state === 'sending')) {
+    if (p.online && nv.goal && ['active', 'sending', 'yielding'].includes(nv.goal_state)) {
       const [cx, cy] = v.toC(nv.goal[0], nv.goal[1]);
       arrow(ctx, cx, cy, nv.goal[2], 9, col, true);
     }

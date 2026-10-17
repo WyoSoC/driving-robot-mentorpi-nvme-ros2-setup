@@ -438,6 +438,9 @@ class Explorer:
         pose = self.slam.pose
 
         if self.goal is not None:
+            if gs == 'yielding':          # waiting for another car (fleet.py): not stuck
+                self.progress_at = now
+                return
             if gs in ('sending', 'active'):
                 known = self._known_m2()
                 moved = pose is not None and math.hypot(pose[0] - self.progress_xy[0],

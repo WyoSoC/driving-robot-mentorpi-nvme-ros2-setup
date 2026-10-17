@@ -112,6 +112,8 @@ Manual start without systemd (in this order):
 ├── fleet.sh                 update / check all cars (car list in fleet.env, not in git)
 ├── maps/                    PER-CAR: SLAM maps saved from the web UI (not transferred)
 ├── tools/steer_test.sh      steering check (front wheels off the ground)
+├── tests/run.sh             tests run in the container, nothing drives: test_fleet.py (cars avoiding
+│                            each other), test_merge.py (map merging), test_depth_sim.py (depth threat levels)
 ├── install.sh               installs/updates everything on a car (idempotent)
 ├── make_bundle.sh           packages kit + Docker image for transfer
 ├── system/                  udev rules + systemd unit templates
@@ -119,6 +121,8 @@ Manual start without systemd (in this order):
 │   ├── index.html           the control page (no external dependencies)
 │   ├── web_ui_server.py     serves the page, drive watchdog, depth colorizer
 │   ├── peer_manager.py      status exchange with the other cars (fleet.env)
+│   ├── fleet.py             cars avoid each other: costmap marks + right of way
+│   ├── map_merge.py         line up two maps of the same place and merge them
 │   ├── explore_manager.py   autonomous mapping (frontier exploration)
 │   ├── depth_obstacles.py   depth camera obstacles (/depth/scan) + comparison with the lidar
 │   ├── map_store.py         saved maps + content hash (same map on two cars?)
@@ -188,7 +192,68 @@ On the page:
 Positions only line up when both cars localise on the same map, so copy one map to both cars
 rather than mapping the room twice. `PEERS="host:port …"` in `car.env` overrides the list from
 `fleet.env` (`PEERS=` turns the exchange off). No ROS changes are involved, and nothing a car
-receives here drives it.
+receives here drives it, except that a car waits for another one in its way (next section).
+
+### Cars avoid each other
+
+When both cars navigate on the **same map** and both know where they are (`web_ui/fleet.py`):
+
+- **Costmap:** the other car's body is drawn into this car's Nav2 costmaps (`fleet_layer`, fed from
+  the status exchange, 5 times a second). The planner routes around it even where the lidar can't
+  see it, such as around a corner. The body is grown by how far the other car can have moved since
+  its status was sent (0.2 m/s × age). An empty 360° scan wipes the old marks each cycle, so a car
+  that has moved on leaves no ghost behind.
+- **Right of way:** this car pauses its goal when the next 1.2 m of its planned path runs within 0.3 m
+  of another car that is **driving to a goal**. The motors stop, the page shows "waiting for jpi2 to
+  pass", and the header badge on the other car's page shows the same. The goal is taken back from Nav2
+  while waiting, so Nav2 doesn't count the wait as being stuck. It is sent again once the way has
+  been clear for 2 s.
+  - If both cars block each other (head-on), the car whose name sorts first (jpi1) keeps going.
+  - A parked, paused or idle car is an ordinary obstacle: the planner goes around it.
+  - After 30 s the waiting car goes on anyway: its planner sees the other car and replans, or reports
+    no path.
+- E-STOP, Cancel goal or touching the joystick also cancels a waiting goal; it never resumes by itself
+  after that.
+
+Tested without driving (`tests/run.sh test_fleet.py`):
+- A real Nav2 costmap node received fake car positions. A parked car is marked, and its marks are
+  gone after it moves.
+- A crossing car makes this car wait, and it resumes 2 s after the other has passed.
+- Head-on, jpi1 goes and jpi2 waits.
+- An offline car leaves nothing behind.
+
+A supervised drive with both cars is still to come.
+
+Not covered yet:
+- Two cars in a narrow corridor head-on: the waiting car doesn't back out of the way.
+- During exploration each car has its own map, so none of this applies until the maps are lined up
+  (next section).
+
+### Merging maps (Map panel → Merge)
+
+Two maps of the same place, made by either car or in different runs, each have their own coordinate
+frame. `web_ui/map_merge.py` lines them up by their walls:
+1. A coarse search tries every 2° of rotation, with the best shift for each found by FFT
+   correlation at 10 cm.
+2. The best candidates are then refined to 2.5 cm and 0.25°.
+
+The match is judged both ways:
+- **Agree:** the share of walls that land on the other map's walls.
+- **Clash:** the share that land on its open floor.
+
+It merges only when agree is ≥ 80% both ways and clash is ≤ 12%.
+
+On the page: pick two maps, **Line up**, check the overlay (blue: first map, red: second, purple: both),
+then **Save merged**. The merged map keeps the first map's position and direction, and syncs to the
+other cars like any map.
+
+Measured on the 5 maps of the living room made by both cars:
+- All 10 pairs matched (agree 85–100%, clash ≤ 9%), about 3–4 s each on the Pi.
+- Chaining A→B→C landed within 7 cm and 1° of A→C directly, so the matches agree with each other.
+- Wrong pairs were all rejected (agree 54–72%, clash 9–35%): a map against its own mirror image, and
+  against a made-up room.
+
+Test: `tests/run.sh test_merge.py`. API: `POST /api/maps/align?a=&b=`, `GET /api/maps/merge.png?a=&b=`, `POST /api/maps/merge?a=&b=&name=`.
 
 ---
 

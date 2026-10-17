@@ -4,6 +4,30 @@ Setup scripts, configuration, and source patches for running the
 [Hiwonder MentorPi M1](https://www.hiwonder.com/products/mentorpi) robotic car
 from an NVMe SSD on a Raspberry Pi 5 with Ubuntu 25.04.
 
+## Mission
+
+**Koatlus Autonomous Navigation:** a small fleet of low-cost Ackermann cars that map an unknown indoor
+space by themselves, together, and then navigate it safely: aware of each other, of obstacles at any
+height the car can hit, and of drops it can fall down.
+
+| # | Goal | State |
+|---|---|---|
+| 1 | Each car drives, sees and is monitored from a browser (camera, lidar, depth, IMU, odometry, battery) | Done |
+| 2 | Each car maps a space by itself (frontier exploration; backs out of tight spots along its own trail) | Done, tested on both cars |
+| 3 | Navigate to a goal on any saved map, from either car | Done |
+| 4 | Cars know about each other: status exchanged at all times, maps synced between cars | Done |
+| 5 | Obstacles from lidar **and** depth camera; camera grades threat: rug = drivable, low hump = bump, else obstacle | Done, tested live |
+| 6 | Cars avoid each other: each car's planner treats the other car as an obstacle, and a right-of-way rule when they meet | In progress |
+| 7 | Map together: two cars explore one space at once, split the unexplored areas, merge into one map | In progress (map merging first) |
+| 8 | Never drive off a drop (stairs, ledges): downward range sensors, no-go zones on the map | Open (needs sensors; camera sees no glossy floor) |
+| 9 | Later: AprilTag landmarks, traffic rules for shared corridors | Open |
+
+Ground rule: a car only drives with a person present who has confirmed it.
+
+Details of each part: [mentorpi/README.md](mentorpi/README.md).
+
+## Setup
+
 The factory software ships on an SD card running Ubuntu 22.04 in a Docker container.
 This repo documents two ways to run it on a modern NVMe-boot system:
 
