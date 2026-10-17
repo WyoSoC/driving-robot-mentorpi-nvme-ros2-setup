@@ -6,10 +6,10 @@
 - /map (OccupancyGrid) is rendered to a PNG on the car; the browser fetches the image instead of
   the raw grid (hundreds of KB per update, too heavy over a slow link).
 - the car's pose in the map frame comes from TF map -> base_footprint; its path is kept here.
-- save: map image + yaml (nav2 map_server format) and slam_toolbox's pose graph; after Stop, the
-  map still on screen is saved as PNG + yaml (no pose graph)
+- save: map image + yaml (nav2 map_server format) and slam_toolbox's pose graph
   (.posegraph/.data, to continue mapping later) into MAPS_DIR, a per-car host folder
-  (mentorpi/maps/, mounted by run_container.sh).
+  (mentorpi/maps/, mounted by run_container.sh). After Stop, the map still on screen is saved as
+  PNG + yaml (no pose graph).
 """
 import math
 import os
