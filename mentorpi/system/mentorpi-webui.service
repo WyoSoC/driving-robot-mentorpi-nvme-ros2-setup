@@ -1,7 +1,8 @@
 [Unit]
 Description=MentorPi web control UI
 Requires=mentorpi-container.service
-Wants=mentorpi-bringup.service
+# Only ordered after the robot software, never starts it: restarting the web UI in charging mode must
+# not switch the sensors back on (mentorpi-bringup is enabled and starts by itself at boot).
 After=mentorpi-bringup.service
 
 [Service]
