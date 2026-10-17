@@ -21,7 +21,8 @@ in_container() { docker exec -d -u ubuntu MentorPi /bin/zsh -c "source ~/.zshrc 
 
 case "$want" in
 on)
-    [ "$cur" = on ] && exit 0
+    # Already on only if the robot software really is stopped (something may have restarted it).
+    [ "$cur" = on ] && ! systemctl is-active -q mentorpi-bringup && exit 0
     echo switching > "$S/charging"
     echo "charging mode on: stopping the robot software"
     systemctl stop mentorpi-bringup        # its stop step ends every ROS process (not the web server)
