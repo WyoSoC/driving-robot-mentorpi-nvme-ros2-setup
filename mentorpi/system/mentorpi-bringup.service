@@ -14,8 +14,6 @@ ExecStart=@DIR@/start_node.sh
 # included, hence the "-" (ignore its exit code).
 ExecStop=-/usr/bin/docker exec -u ubuntu MentorPi /bin/zsh -c "~/.stop_ros.sh"
 Restart=on-failure
-# the stop step kill -9s the launch, so docker exec exits 137: that is a normal stop
-SuccessExitStatus=137 143
 RestartSec=5
 
 [Install]

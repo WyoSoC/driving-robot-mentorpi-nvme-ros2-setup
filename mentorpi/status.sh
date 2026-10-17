@@ -8,8 +8,11 @@ PORT=${WEB_UI_PORT:-8000}
 echo "== ${CAR_NAME:-?}  (ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-?})"
 echo; echo "-- services"
 for u in mentorpi-container mentorpi-bringup mentorpi-webui; do
-    printf "  %-20s %s / %s\n" "$u" "$(systemctl is-active $u)" "$(systemctl is-enabled $u 2>/dev/null)"
+    s=$(systemctl is-active $u)
+    [ "$u" = mentorpi-bringup ] && [ -e "$DIR/state/charging" ] && s="stopped (charging mode)"
+    printf "  %-20s %s / %s\n" "$u" "$s" "$(systemctl is-enabled $u 2>/dev/null)"
 done
+[ -e "$DIR/state/charging" ] && echo "  CHARGING MODE: only the board (battery) and rosbridge run; turn it off on the web page"
 
 echo; echo "-- devices"
 for d in /dev/rrc /dev/ldlidar; do
