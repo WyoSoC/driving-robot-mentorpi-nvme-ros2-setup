@@ -17,6 +17,10 @@
   /api/nav/cancel. Joystick input from the page cancels a navigation goal.
 - SLAM (slam_manager.py): GET /api/slam (status, pose, path), GET /api/slam/map.png,
   POST /api/slam/start | /api/slam/stop | /api/slam/save?name=NAME
+- Other cars (peer_manager.py, peers from fleet.env): GET /api/self = this car's status (what the other
+  cars poll), GET /api/fleet = this car + the latest status of every other car, GET /api/maps = maps here
+  and on the other cars, GET /api/maps/file?name=&ext=png|yaml (a map for another car to copy).
+  A map of another car: GET /api/nav/map.png?name=&car=, POST /api/nav/start?map=&car= copies it here first.
 
 /app/cmd_vel contract (odom_publisher_node, MentorPi_Acker):
   linear.x  = speed in m/s
@@ -42,11 +46,15 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
 from std_msgs.msg import String, UInt16
 
+import map_store
 from battery_estimator import BatteryEstimator
 from nav_manager import NavManager
+from peer_manager import PeerManager
 from slam_manager import SlamManager
 
 HTTP_PORT = int(os.environ.get('WEB_UI_PORT', 8000))
+CAR_NAME = os.environ.get('CAR_NAME') or os.uname().nodename.split('.')[0]
+PEERS = os.environ.get('PEERS', '')
 WEB_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 MAX_SPEED = 0.7               # m/s, joystick_control default
@@ -83,6 +91,8 @@ class WebBridge(Node):
 
         self.battery = BatteryEstimator()
         self.battery_v = None
+        self.battery_st = None
+        self.speed = 0.0
         self.battery_pub = self.create_publisher(String, '/web/battery_status', 1)
         self.create_subscription(UInt16, BATTERY_TOPIC, self.on_battery, 10)
         self.create_subscription(Odometry, '/odom', self.on_odom, 10)
@@ -92,6 +102,26 @@ class WebBridge(Node):
 
         self.slam = SlamManager(self)
         self.nav = NavManager(self, self.slam.tf, self.slam)
+        self.peers = PeerManager(CAR_NAME, PEERS, self.get_logger())
+
+    def self_status(self):
+        """What the other cars see of this one (GET /api/self)."""
+        nav = self.nav.status()
+        slam_on = self.slam.running()
+        mode = ('charging' if self.charging != 'off' else 'navigating' if nav['running']
+                else 'mapping' if slam_on else 'idle')
+        return {
+            'car': CAR_NAME,
+            'mode': mode,
+            'charging': self.charging,
+            'battery': self.battery_st,
+            'speed': round(self.speed, 3),
+            'nav': {k: nav[k] for k in ('running', 'map_name', 'pose', 'pose_set', 'goal', 'goal_state', 'plan',
+                                        'feedback')}
+                   | {'map_hash': nav['map']['hash'] if nav['map'] else None},
+            'slam': slam_on,
+            'maps': [{k: m[k] for k in ('name', 'hash', 'resolution', 'origin')} for m in map_store.listing()],
+        }
 
     def read_charging_mode(self):
         try:
@@ -135,12 +165,14 @@ class WebBridge(Node):
         self.battery.add(time.monotonic(), self.battery_v)
 
     def on_odom(self, msg):
+        self.speed = msg.twist.twist.linear.x
         if abs(msg.twist.twist.linear.x) > DRIVING_SPEED:
             self.battery.driving(time.monotonic())
 
     def publish_battery(self):
         if self.battery_v is not None:
-            self.battery_pub.publish(String(data=json.dumps(self.battery.status(self.battery_v))))
+            self.battery_st = self.battery.status(self.battery_v)
+            self.battery_pub.publish(String(data=json.dumps(self.battery_st)))
 
     def on_depth(self, msg):
         if self.depth_pub.get_subscription_count() == 0:
@@ -188,8 +220,31 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
             return self._send(200, png, 'image/png') if png else self._send(404, {'error': 'no map yet'})
         if url.path == '/api/nav':
             return self._send(200, self.node.nav.status())
+        if url.path == '/api/self':
+            return self._send(200, self.node.self_status())
+        if url.path == '/api/fleet':
+            return self._send(200, {'car': CAR_NAME, 'peers': self.node.peers.summary()})
+        if url.path == '/api/maps':
+            return self._send(200, self.maps_everywhere())
+        if url.path == '/api/maps/file':
+            q = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
+            name, ext = q.get('name', ''), q.get('ext', '')
+            if name not in map_store.names() or ext not in ('png', 'yaml'):
+                return self._send(404, {'error': 'no such map'})
+            try:
+                if ext == 'png':
+                    return self._send(200, map_store.png_bytes(name), 'image/png')
+                return self._send(200, map_store.yaml_text(name).encode(), 'text/plain')
+            except (OSError, KeyError, ValueError):
+                return self._send(404, {'error': 'map files missing'})
         if url.path == '/api/nav/map.png':
-            name = urllib.parse.parse_qs(url.query).get('name', [''])[0]
+            q = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
+            name, car = q.get('name', ''), q.get('car', '')
+            if car and car != CAR_NAME:
+                try:
+                    return self._send(200, self.node.peers.map_png(car, name), 'image/png')
+                except Exception as exc:
+                    return self._send(404, {'error': f'cannot get the map from {car}: {exc}'})
             if name not in self.node.nav.maps():
                 return self._send(404, {'error': 'no such map'})
             try:
@@ -199,6 +254,18 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
             except (OSError, KeyError):
                 return self._send(404, {'error': 'map image missing'})
         return super().do_GET()
+
+    def maps_everywhere(self):
+        """Maps here, then maps on the other cars that are not here (same content = same map)."""
+        here = [dict(m, car=CAR_NAME, local=True) for m in map_store.listing()]
+        seen = {m['hash'] for m in here}
+        out = list(here)
+        for p in self.node.peers.summary():
+            for m in ((p['status'] or {}).get('maps') or []):
+                if m.get('hash') not in seen:
+                    seen.add(m.get('hash'))
+                    out.append(dict(m, car=p['car'], local=False, online=p['online']))
+        return {'car': CAR_NAME, 'maps': out}
 
     def do_POST(self):
         url = urllib.parse.urlparse(self.path)
@@ -217,7 +284,15 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
             nav, action = self.node.nav, url.path[len('/api/nav/'):]
             try:
                 if action == 'start':
-                    ok, msg = nav.start(q.get('map', ''))
+                    name, car = q.get('map', ''), q.get('car', '')
+                    if car and car != CAR_NAME:
+                        if nav.running():
+                            return self._send(400, {'ok': False, 'message': f'already navigating on "{nav.map_name}"'})
+                        try:
+                            name = self.node.peers.fetch_map(car, name)
+                        except Exception as exc:
+                            return self._send(400, {'ok': False, 'message': f'cannot copy the map from {car}: {exc}'})
+                    ok, msg = nav.start(name)
                 elif action == 'stop':
                     ok, msg = nav.stop()
                 elif action == 'cancel':
@@ -280,6 +355,7 @@ def main():
         except Exception:
             pass
         node.nav.shutdown()
+        node.peers.shutdown()
         node.slam.shutdown()
         node.destroy_node()
         rclpy.try_shutdown()

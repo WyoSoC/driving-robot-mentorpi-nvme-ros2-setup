@@ -15,6 +15,7 @@
     --accent: #3fb6ff;
     --ok: #3fb950;
     --warn: #d29922;
+    --peer: #58a6ff;
     --bad: #f85149;
     --radius: 12px;
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -46,6 +47,9 @@
   #chargeBtn.on { color: #111; background: var(--ok); border-color: var(--ok); font-weight: 600; }
   #chargeBtn.switching { color: var(--warn); border-color: var(--warn); }
   .spacer { flex: 1; }
+  .peer { text-decoration: none; }
+  .peer b { color: var(--peer); font-weight: 600; }
+  .peer.offline { opacity: .6; }
 
   .estop { border: 0; border-radius: 10px; padding: 7px 16px; font-weight: 700; font-size: 14px;
     letter-spacing: .06em; color: #fff; background: var(--bad); cursor: pointer;
@@ -166,10 +170,11 @@
 <body>
 
 <header>
-  <h1>MentorPi <span>· web control</span></h1>
+  <h1>MentorPi <span id="carName">· web control</span></h1>
   <span class="pill"><span class="dot" id="connDot"></span><span id="connText">Connecting…</span></span>
   <span class="pill" id="battPill" title="Battery">🔋 <span id="battText">--</span></span>
   <button class="btn" id="chargeBtn" aria-pressed="false">⚡ Charging mode: off</button>
+  <span id="peerPills" style="display:contents"></span>
   <span class="spacer"></span>
   <button class="estop" id="estop" title="Emergency stop (Space)">E-STOP</button>
 </header>
@@ -269,7 +274,7 @@
     <h2>Map <span class="right"><span class="tabs" id="mapTabs"><button data-mode="slam" class="active">Mapping</button><button data-mode="nav">Navigate</button></span>
       <span class="pill" id="slamState">off</span></span></h2>
     <div class="slam-bar" id="navBar" hidden>
-      <select id="navMap" title="Saved maps on this car"></select>
+      <select id="navMap" title="Saved maps on this car and on the other cars (copied here when navigation starts)"></select>
       <button class="btn" id="navStart">Start navigation</button>
       <button class="btn" id="navStop">Stop</button>
       <button class="btn" id="navSetPose" title="Click where the car is on the map, drag in the direction it faces">📍 Set position</button>
@@ -874,10 +879,45 @@ function drawSlam() {
 }
 setInterval(slamPoll, 1000); slamPoll();
 
+// ---------- Other cars (status exchange through this car's web server) ----------
+// The server polls the other cars twice a second (also in charging mode); the page asks it every second.
+const fleet = { car: null, peers: [] };
+const PEER_MODE = { charging: 'charging', navigating: 'navigating', mapping: 'mapping', idle: 'idle' };
+async function fleetPoll() {
+  let f;
+  try { f = await (await fetch('/api/fleet')).json(); } catch { return; }
+  if (fleet.car === null && f.car) { $('carName').textContent = `· ${f.car}`; document.title = `MentorPi ${f.car}`; }
+  const before = new Map(fleet.peers.map(p => [p.car, p.online]));
+  fleet.car = f.car; fleet.peers = f.peers || [];
+  for (const p of fleet.peers) {
+    if (before.has(p.car) && before.get(p.car) !== p.online) log(`${p.car} is ${p.online ? 'online' : 'offline'}`);
+  }
+  $('peerPills').innerHTML = fleet.peers.map(p => {
+    const st = p.status || {}, b = st.battery || {}, nv = st.nav || {};
+    let txt;
+    if (!p.online) txt = p.age_s != null ? `offline · last seen ${fmtAge(p.age_s)} ago` : 'offline';
+    else {
+      txt = (b.soc != null ? `${b.soc}%` + (b.state === 'charging' ? '⚡' : '') : '--%') + ' · ' + (PEER_MODE[st.mode] || st.mode || '?');
+      if (st.mode === 'navigating') txt += ` ${nv.map_name || ''}` + ((nv.goal_state === 'active' || nv.goal_state === 'sending') ? ' → goal' : '');
+    }
+    const host = p.addr.split(':')[0], port = p.addr.split(':')[1] || '8000';
+    const tip = p.online ? `${p.car}: ${b.v != null ? b.v.toFixed(2) + ' V, ' : ''}${st.mode}` +
+      (Math.abs(st.speed || 0) > 0.01 ? `, ${st.speed.toFixed(2)} m/s` : '') + ' — click to open its page'
+      : `${p.car} not reachable: ${p.error || ''}`;
+    return `<a class="pill peer${p.online ? '' : ' offline'}" href="http://${host}:${port}/" target="_blank" title="${esc(tip)}">` +
+      `<span class="dot${p.online ? ' ok' : ''}"></span><b>${esc(p.car)}</b> ${esc(txt)}</a>`;
+  }).join('');
+  if (mapMode === 'nav') drawNav();
+}
+function fmtAge(s) { return s < 90 ? `${Math.round(s)} s` : s < 5400 ? `${Math.round(s / 60)} min` : `${(s / 3600).toFixed(1)} h`; }
+function esc(t) { return String(t).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]); }
+setInterval(fleetPoll, 1000); fleetPoll();
+
 // ---------- Navigation (Nav2 on a saved map) ----------
 // nav_manager.py runs Nav2; the page shows the saved map, the car (AMCL), the plan and the goal.
 // Set position / Go to: click a point on the map, drag in the heading direction, release.
-const nav = { st: null, img: null, imgName: null, tool: null, drag: null, view: null };
+const nav = { st: null, img: null, imgName: null, tool: null, drag: null, view: null,
+              maps: [], preview: null };   // maps: here + other cars (/api/maps); preview: {key, img, m}
 function setMapMode(m) {
   mapMode = m;
   for (const b of $('mapTabs').children) b.classList.toggle('active', b.dataset.mode === m);
@@ -898,7 +938,34 @@ async function navApi(action, query = '') {
   navPoll();
   return j;
 }
-$('navStart').onclick = () => navApi('start', `?map=${encodeURIComponent($('navMap').value)}`);
+function selectedMap() {
+  const [car, name] = ($('navMap').value || '|').split('|');
+  return nav.maps.find(m => m.car === car && m.name === name) || null;
+}
+$('navStart').onclick = () => {
+  const m = selectedMap();
+  if (!m) return;
+  if (!m.local) $('navMsg').textContent = `copying "${m.name}" from ${m.car}…`;
+  navApi('start', `?map=${encodeURIComponent(m.name)}&car=${encodeURIComponent(m.car)}`);
+};
+$('navMap').onchange = () => { nav.preview = null; drawNav(); navPreview(); };
+async function mapsPoll() {
+  try { nav.maps = (await (await fetch('/api/maps')).json()).maps || []; } catch { return; }
+  navPoll();
+}
+setInterval(mapsPoll, 5000); mapsPoll();
+function navPreview() {   // when not navigating: show the picked map (here or on another car)
+  const m = selectedMap();
+  if (!m || (nav.st && nav.st.running)) return;
+  const key = `${m.car}|${m.name}|${m.hash}`;
+  if (nav.preview && nav.preview.key === key) return;
+  const img = new Image();
+  img.onload = () => {
+    const now = selectedMap();
+    if (now && `${now.car}|${now.name}|${now.hash}` === key) { nav.preview = { key, img, m }; drawNav(); }
+  };
+  img.src = `/api/nav/map.png?name=${encodeURIComponent(m.name)}` + (m.local ? '' : `&car=${encodeURIComponent(m.car)}`) + `&h=${m.hash}`;
+}
 $('navStop').onclick = () => navApi('stop');
 $('navCancel').onclick = () => navApi('cancel');
 function setTool(tool) {
@@ -917,14 +984,26 @@ async function navPoll() {
   let st;
   try { st = await (await fetch('/api/nav')).json(); } catch { return; }
   nav.st = st;
-  const sel = $('navMap'), keep = sel.value || (st.map_name ?? '');
-  if ([...sel.options].map(o => o.value).join() !== st.maps.join()) {
-    sel.innerHTML = st.maps.map(n => `<option>${n}</option>`).join('') || '<option value="">(no saved maps)</option>';
+  const sel = $('navMap'), keep = sel.value;
+  const maps = nav.maps.length || !st.maps.length ? nav.maps
+    : st.maps.map(n => ({ name: n, car: fleet.car, local: true }));   // before /api/maps answered
+  const val = m => `${m.car}|${m.name}`;
+  const sig = maps.map(m => val(m) + (m.local ? '' : m.online ? '+' : '-')).join();
+  if (sel.dataset.sig !== sig) {
+    sel.dataset.sig = sig;
+    const here = maps.filter(m => m.local), groups = {};
+    maps.filter(m => !m.local).forEach(m => (groups[m.car] = groups[m.car] || []).push(m));
+    const opt = m => `<option value="${esc(val(m))}">${esc(m.name)}${m.local || m.online ? '' : ' (offline)'}</option>`;
+    sel.innerHTML = !maps.length ? '<option value="">(no saved maps)</option>'
+      : (here.length ? `<optgroup label="On this car">${here.map(opt).join('')}</optgroup>` : '') +
+        Object.entries(groups).map(([car, ms]) => `<optgroup label="On ${esc(car)} (copied here at start)">${ms.map(opt).join('')}</optgroup>`).join('');
   }
-  sel.value = st.running ? st.map_name : (st.maps.includes(keep) ? keep : st.maps[0] || '');
+  const vals = maps.map(val);
+  sel.value = st.running ? `${fleet.car}|${st.map_name}` : (vals.includes(keep) ? keep : vals[0] || '');
   sel.disabled = st.running;
+  const pick = selectedMap();
   const active = st.goal_state === 'active' || st.goal_state === 'sending';
-  $('navStart').disabled = st.running || !st.maps.length || (slam.st && slam.st.running);
+  $('navStart').disabled = st.running || !pick || (!pick.local && !pick.online) || (slam.st && slam.st.running);
   $('navStop').disabled = !st.running;
   $('navSetPose').disabled = !st.running; $('navGoTo').disabled = !st.running || !st.pose_set;
   $('navCancel').disabled = !active;
@@ -933,7 +1012,9 @@ async function navPoll() {
     $('slamInfo').textContent = st.running
       ? 'Red arrow: the car (lidar localization). Green: planned path and goal. The car stops if the lidar sees ' +
         'something close; E-STOP or touching the joystick cancels the goal. Speed ≤ 0.2 m/s.'
-      : 'Drive with a map saved in Mapping mode. Start navigation, set the car\'s position, then pick a goal.';
+      : 'Drive with a map saved in Mapping mode (on this car or another one). Start navigation, set the car\'s ' +
+        'position, then pick a goal.';
+    if (fleet.peers.length) $('slamInfo').textContent += ' Blue: other cars on the same map.';
     $('slamState').textContent = !st.running ? 'off' : active ? 'driving to goal'
       : st.pose_set ? `ready · ${st.map_name}` : `starting · ${st.map_name}`;
     $('slamState').style.color = active ? 'var(--warn)' : st.running ? 'var(--ok)' : '';
@@ -948,12 +1029,13 @@ async function navPoll() {
     img.onload = () => { nav.img = img; nav.imgName = name; drawNav(); };
     img.src = `/api/nav/map.png?name=${encodeURIComponent(name)}`;
   }
-  if (!st.running) { nav.img = null; nav.imgName = null; }
+  if (!st.running) { nav.img = null; nav.imgName = null; navPreview(); }
   drawNav();
 }
 setInterval(navPoll, 1000); navPoll();
 function navView(w, h) {
-  const m = nav.st && nav.st.map, img = nav.img;
+  let m = nav.st && nav.st.map, img = nav.img;
+  if (!(nav.st && nav.st.running) && nav.preview) ({ m, img } = nav.preview);
   if (!m || !img) return null;
   const s = Math.min(w / img.width, h / img.height);
   const ox = (w - img.width * s) / 2, oy = (h - img.height * s) / 2;
@@ -982,6 +1064,7 @@ function drawNav() {
     ctx.fillText(st && st.running ? 'Loading map…' : 'Pick a saved map and press "Start navigation"', 12, 22);
     return;
   }
+  const preview = !(st && st.running);
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(v.img, v.ox, v.oy, v.img.width * v.s, v.img.height * v.s);
   if (st.plan && st.plan.length > 1) {
@@ -993,15 +1076,42 @@ function drawNav() {
     const [cx, cy] = v.toC(st.goal[0], st.goal[1]);
     arrow(ctx, cx, cy, st.goal[2], 11, '#3fb950', true);
   }
+  drawPeers(ctx, v);
   if (st.pose && st.pose_set) {
     const [cx, cy] = v.toC(st.pose[0], st.pose[1]);
     arrow(ctx, cx, cy, st.pose[2], 10, '#f85149');
+  }
+  if (preview) {
+    ctx.fillStyle = 'rgba(13,17,23,.75)'; ctx.fillRect(0, 0, w, 22);
+    ctx.fillStyle = '#c9d1d9'; ctx.font = '12px system-ui';
+    ctx.fillText(`Preview: ${v.m.name}` + (nav.preview.m.local ? '' : ` (on ${nav.preview.m.car})`) + ' · press "Start navigation"', 8, 15);
   }
   if (nav.drag) {
     const { x0, y0, x1, y1 } = nav.drag;
     ctx.strokeStyle = nav.tool === 'pose' ? '#f85149' : '#3fb950'; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
     ctx.beginPath(); ctx.arc(x0, y0, 5, 0, 2 * Math.PI); ctx.stroke();
+  }
+}
+function drawPeers(ctx, v) {   // other cars navigating on this same map (same content hash)
+  const hash = v.m.hash;
+  for (const p of fleet.peers) {
+    const nv = p.status && p.status.nav;
+    if (!nv || !nv.running || nv.map_hash !== hash || !nv.pose_set || !nv.pose) continue;
+    const col = p.online ? '#58a6ff' : '#5b6573';
+    if (p.online && nv.plan && nv.plan.length > 1) {
+      ctx.save(); ctx.setLineDash([6, 4]); ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.beginPath();
+      nv.plan.forEach((q, i) => { const [cx, cy] = v.toC(q[0], q[1]); i ? ctx.lineTo(cx, cy) : ctx.moveTo(cx, cy); });
+      ctx.stroke(); ctx.restore();
+    }
+    if (p.online && nv.goal && (nv.goal_state === 'active' || nv.goal_state === 'sending')) {
+      const [cx, cy] = v.toC(nv.goal[0], nv.goal[1]);
+      arrow(ctx, cx, cy, nv.goal[2], 9, col, true);
+    }
+    const [cx, cy] = v.toC(nv.pose[0], nv.pose[1]);
+    arrow(ctx, cx, cy, nv.pose[2], 10, col);
+    ctx.fillStyle = col; ctx.font = '11px system-ui';
+    ctx.fillText(p.online ? p.car : `${p.car} (${fmtAge(p.age_s || 0)} ago)`, cx + 12, cy - 8);
   }
 }
 const mapCanvas = $('slamMap');

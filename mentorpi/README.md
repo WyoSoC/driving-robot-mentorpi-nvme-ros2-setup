@@ -118,6 +118,8 @@ Manual start without systemd (in this order):
 ├── web_ui/
 │   ├── index.html           the control page (no external dependencies)
 │   ├── web_ui_server.py     serves the page, drive watchdog, depth colorizer
+│   ├── peer_manager.py      status exchange with the other cars (fleet.env)
+│   ├── map_store.py         saved maps + content hash (same map on two cars?)
 │   └── start_web_ui.sh
 ```
 
@@ -160,6 +162,31 @@ its `ROS_DOMAIN_ID` is the number in the hostname (`install.sh` does this by def
 
 To change it later: edit `car.env`, then `sudo systemctl restart mentorpi-container && sudo systemctl start mentorpi-webui`.
 If you use ROS 2 tools from a laptop, set the same `ROS_DOMAIN_ID` there.
+
+### Cars know about each other (status exchange)
+
+Separate ROS domains keep the cars' topics apart, so they share status through their web servers
+instead (`web_ui/peer_manager.py`). Each web server asks every other car in `fleet.env` for
+`GET /api/self` twice a second (every 3 s while one is unreachable). This keeps running in charging
+mode, because the web server always stays on. The other car's status contains its battery, mode
+(idle / mapping / navigating / charging), speed, navigation map, position, goal and planned path,
+and its list of saved maps.
+
+On the page:
+
+- **Header:** a badge per other car with its battery and mode. Click it to open that car's page.
+- **Map panel, Navigate tab:**
+  - The map list shows the maps on this car and on the other cars.
+  - Picking a map previews it.
+  - Starting navigation on another car's map first copies it here. If a different map already
+    has that name here, the copy is saved as `NAME_car`.
+  - Other cars that navigate on the **same map** appear in blue, with their position, planned path
+    and goal. "Same map" is decided by a hash of the map's contents, not its name.
+
+Positions only line up when both cars localise on the same map, so copy one map to both cars
+rather than mapping the room twice. `PEERS="host:port …"` in `car.env` overrides the list from
+`fleet.env` (`PEERS=` turns the exchange off). No ROS changes are involved, and nothing a car
+receives here drives it.
 
 ---
 

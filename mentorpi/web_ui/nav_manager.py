@@ -11,7 +11,6 @@
 """
 import math
 import os
-import re
 import signal
 import subprocess
 import threading
@@ -24,9 +23,11 @@ from nav_msgs.msg import Path
 from rclpy.action import ActionClient
 from rclpy.time import Time
 
-MAPS_DIR = '/home/ubuntu/maps'
+import map_store
+
+MAPS_DIR = map_store.MAPS_DIR
 LAUNCH = ['ros2', 'launch', '/home/ubuntu/nav/nav.launch.py']
-NAME_RE = re.compile(r'^[A-Za-z0-9_-]{1,40}$')
+NAME_RE = map_store.NAME_RE
 CMD_FRESH_S = 0.5          # Nav2 command older than this -> stop
 PLAN_STEP = 0.05           # m between plan points sent to the page
 
@@ -70,20 +71,11 @@ class NavManager:
         return self.proc is not None and self.proc.poll() is None
 
     def maps(self):
-        try:
-            return sorted(f[:-5] for f in os.listdir(MAPS_DIR) if f.endswith('.yaml'))
-        except OSError:
-            return []
+        return map_store.names()
 
     def map_meta(self, name):
-        """resolution + origin from a saved map yaml (the page draws the PNG with it)."""
-        meta = {}
-        with open(os.path.join(MAPS_DIR, name + '.yaml')) as f:
-            for line in f:
-                k, _, v = line.partition(':')
-                meta[k.strip()] = v.strip()
-        origin = [float(x) for x in meta['origin'].strip('[]').split(',')[:2]]
-        return {'image': meta['image'], 'resolution': float(meta['resolution']), 'origin': origin}
+        """resolution, origin, image and content hash of a saved map (the page draws the PNG with it)."""
+        return map_store.meta(name)
 
     def start(self, name):
         with self.lock:
@@ -243,7 +235,7 @@ class NavManager:
     # ---- status for the web page -----------------------------------------------
     def status(self):
         meta = None
-        if self.map_name:
+        if self.map_name and self.running():
             try:
                 meta = self.map_meta(self.map_name)
             except (OSError, KeyError, ValueError):
