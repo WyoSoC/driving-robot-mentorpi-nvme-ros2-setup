@@ -58,6 +58,9 @@ ESCAPE_M = 0.25          # m to drive straight
 ESCAPE_SPEED = 0.06      # m/s
 ESCAPE_CLEAR = 0.30      # m free needed in the driving direction (lidar, from the lidar centre + body)
 ESCAPE_MAX = 3           # escapes in a row without any goal succeeding -> stop escaping
+RETRACE_M = 0.8          # m to drive back along the car's own trail (known to fit) before replanning
+RETRACE_LOOKAHEAD = 0.30 # m, pure pursuit on the trail
+MIN_TURN_R = 0.40        # m, tightest turn of the car
 SCAN_TOPIC = '/scan_raw'  # lidar_frame = base_footprint orientation (0 = forward, counter-clockwise)
 
 
@@ -264,11 +267,87 @@ class Explorer:
         return float(r[sel].min()) if sel.any() else None
 
     def _escape(self):
-        """Drive straight out of a tight spot. Returns True if the car moved."""
+        """Get out of a tight spot (the planner won't start there: 'Starting point in lethal space'):
+        first drive back along the car's own trail (it came in that way, so it fits), else straight.
+        Returns True if the car moved."""
         if self.escapes >= ESCAPE_MAX:
             return False
+        if self._retrace():
+            self.escapes += 1
+            return True
+        return self._straight_out()
+
+    def _drive_ok(self, direction_deg, body):
+        """False when someone drives with the joystick, exploring stopped, or an obstacle is close."""
+        if not self.active():
+            return False
+        if time.monotonic() - self.node.last_cmd_time < 1.0 and self.node.moving:
+            return False
+        c = self._clearance(direction_deg)
+        return c is None or c - body >= 0.10
+
+    def _retrace(self):
+        """Reverse (pure pursuit) along the last RETRACE_M of the trail the car drove."""
+        trail, pose = list(self.slam.path), self.slam.pose
+        if len(trail) < 4 or pose is None:
+            return False
+        pts, dist = [[pose[0], pose[1]]], 0.0
+        for p in reversed(trail):
+            d = math.hypot(p[0] - pts[-1][0], p[1] - pts[-1][1])
+            if d < 0.02:
+                continue
+            dist += d
+            pts.append(p)
+            if dist >= RETRACE_M:
+                break
+        if dist < 0.2:
+            return False
+        self.message = f'tight spot: backing out along its own trail ({dist:.1f} m)'
+        self.log.info(f'escape {self.escapes + 1}: {self.message}')
+        start, t0, idx, moved = pose, time.monotonic(), 0, 0.0
+        while time.monotonic() - t0 < dist / ESCAPE_SPEED + 6.0:
+            pose = self.slam.pose
+            if pose is None:
+                break
+            moved = math.hypot(pose[0] - start[0], pose[1] - start[1])
+            # nearest trail point from where we are (never go back to earlier ones)
+            while idx + 1 < len(pts) and math.hypot(pts[idx + 1][0] - pose[0], pts[idx + 1][1] - pose[1]) <= \
+                    math.hypot(pts[idx][0] - pose[0], pts[idx][1] - pose[1]):
+                idx += 1
+            end = pts[-1]
+            if math.hypot(end[0] - pose[0], end[1] - pose[1]) < 0.08 or idx == len(pts) - 1:
+                break
+            tgt = end
+            for q in pts[idx:]:
+                if math.hypot(q[0] - pose[0], q[1] - pose[1]) >= RETRACE_LOOKAHEAD:
+                    tgt = q
+                    break
+            dx, dy = tgt[0] - pose[0], tgt[1] - pose[1]
+            c, sn = math.cos(pose[2]), math.sin(pose[2])
+            xr, yr = c * dx + sn * dy, -sn * dx + c * dy          # target in the car's frame
+            v = -ESCAPE_SPEED if xr < 0 else ESCAPE_SPEED          # the trail is normally behind
+            direction, body = (180, 0.13) if v < 0 else (0, 0.14)
+            if not self._drive_ok(direction, body):
+                break
+            kappa = 2.0 * yr / max(xr * xr + yr * yr, 1e-6)
+            kappa = max(-1.0 / MIN_TURN_R, min(1.0 / MIN_TURN_R, kappa))
+            twist = Twist()
+            twist.linear.x, twist.angular.z = v, v * kappa
+            self.cmd_pub.publish(twist)
+            time.sleep(0.1)
+        self._halt()
+        self.log.info(f'escape done (trail): moved {moved:.2f} m')
+        return moved > 0.1
+
+    def _halt(self):
+        self.cmd_pub.publish(Twist())
+        time.sleep(0.3)
+        self.cmd_pub.publish(Twist())
+
+    def _straight_out(self):
+        """Drive straight back (or forward) ESCAPE_M if the lidar shows room."""
         back, front = self._clearance(180), self._clearance(0)
-        body = {180: 0.13, 0: 0.14}          # lidar centre -> rear / front bumper
+        body = {180: 0.13, 0: 0.14}          # lidar centre -> rear / front bumper (this car)
         options = [(c - body[d], d) for c, d in ((back, 180), (front, 0)) if c is not None]
         options = [o for o in options if o[0] >= ESCAPE_CLEAR]
         if not options:
