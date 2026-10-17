@@ -4,7 +4,8 @@ Why: the lidar scans one flat plane 16 cm above the floor. Anything lower (a sho
 or an overhang above it is invisible to it. The depth camera (Angstrong HP60C, 12 cm high, looking straight
 ahead, 58 deg wide) sees a 3-D picture of what is in front of the car.
 
-What this does with every depth frame (~12 Hz):
+What this does with a depth frame, at most RATE_HZ times a second (the camera sends ~12; 12 Hz of this
+plus Nav2's two costmap layers overloaded the Pi 5 while navigating):
 1. Every 4th pixel becomes a 3-D point (camera intrinsics), moved into the car frame (base_footprint, TF).
 2. Points between MIN_H and MAX_H above the floor and within MAX_RANGE are obstacles: the band the car's
    body occupies. The floor itself (and its noise) and anything above the car are left out.
@@ -46,6 +47,7 @@ MAX_H = 0.22             # m: higher = above the car (lidar at 0.16 m, top of th
 DROP_H = -0.06           # m: below the floor by this much = possible drop (stairs); counted only
 BIN = math.radians(0.5)
 HISTORY = 3              # frames for the median filter
+RATE_HZ = 5.0            # processed depth frames per second (0.18 m/s -> 4 cm between frames)
 AGREE_M = 0.15           # m: lidar and camera "agree" within this
 COMPARE_PERIOD = 0.5     # s
 LIDAR_X = -0.010         # lidar_frame origin in base_footprint (TF), same orientation
@@ -111,6 +113,10 @@ class DepthObstacles:
     def on_depth(self, msg):
         if self.K is None or msg.encoding not in ('16UC1', 'mono16'):
             return
+        now = time.monotonic()
+        if now - self.last_frame < 1.0 / RATE_HZ - 0.01:
+            return
+        self.last_frame = now
         if self.rays is None:
             self._setup(msg)
         if self.R is None:
@@ -137,7 +143,6 @@ class DepthObstacles:
         filt = np.median(np.stack(self.hist), axis=0) if len(self.hist) == HISTORY else ranges
         self.scan = filt
         self.frames += 1
-        self.last_frame = time.monotonic()
 
         out = LaserScan()
         out.header.stamp = msg.header.stamp
@@ -146,7 +151,7 @@ class DepthObstacles:
         out.angle_max = float(self.angle_min + (self.n_bins - 1) * BIN)
         out.angle_increment = float(BIN)
         out.time_increment = 0.0
-        out.scan_time = 1.0 / 12
+        out.scan_time = 1.0 / RATE_HZ
         out.range_min = 0.05
         out.range_max = float(MAX_RANGE)
         out.ranges = [float(x) for x in filt]

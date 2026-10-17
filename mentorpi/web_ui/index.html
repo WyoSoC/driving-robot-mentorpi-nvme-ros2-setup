@@ -678,7 +678,7 @@ ros.subscribe('/depth/scan', 'sensor_msgs/msg/LaserScan', msg => {
   msg.ranges.forEach(r => { if (r != null && isFinite(r) && r < near) near = r; });
   $('cNear').textContent = isFinite(near) ? near.toFixed(2) + ' m' : 'clear';
   drawLidar();
-}, 150);
+}, 300);
 ros.subscribe('/depth/compare', 'std_msgs/msg/String', msg => {
   let c; try { c = JSON.parse(msg.data); } catch (_e) { return; }
   const el = $('cmpInfo');
