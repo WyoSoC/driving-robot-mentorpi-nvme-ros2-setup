@@ -19,6 +19,8 @@
   POST /api/slam/start | /api/slam/stop | /api/slam/save?name=NAME
 - Exploration (explore_manager.py): POST /api/explore/start?radius=M (0 = no limit) | /api/explore/stop;
   its status is in GET /api/slam ("explore"). Maps by itself: SLAM + Nav2 on the live map + frontiers.
+- Depth camera obstacles (depth_obstacles.py): /depth/scan (LaserScan, base_footprint) for Nav2 and
+  /depth/compare (JSON: camera vs lidar) for the page; GET /api/depth = the latest comparison.
 - Other cars (peer_manager.py, peers from fleet.env): GET /api/self = this car's status (what the other
   cars poll), GET /api/fleet = this car + the latest status of every other car, GET /api/maps = maps here
   and on the other cars, GET /api/maps/file?name=&ext=png|yaml (a map for another car to copy).
@@ -50,6 +52,7 @@ from std_msgs.msg import String, UInt16
 
 import map_store
 from battery_estimator import BatteryEstimator
+from depth_obstacles import DepthObstacles
 from explore_manager import Explorer
 from nav_manager import NavManager
 from peer_manager import PeerManager
@@ -105,6 +108,7 @@ class WebBridge(Node):
 
         self.slam = SlamManager(self)
         self.nav = NavManager(self, self.slam.tf, self.slam)
+        self.depth_obs = DepthObstacles(self, self.slam.tf)   # /depth/scan + /depth/compare
         self.explorer = Explorer(self, self.slam, self.nav, CAR_NAME)
         self.peers = PeerManager(CAR_NAME, PEERS, self.get_logger())
 
@@ -229,6 +233,8 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
             return self._send(200, png, 'image/png') if png else self._send(404, {'error': 'no map yet'})
         if url.path == '/api/nav':
             return self._send(200, self.node.nav.status())
+        if url.path == '/api/depth':
+            return self._send(200, self.node.depth_obs.compare)
         if url.path == '/api/self':
             return self._send(200, self.node.self_status())
         if url.path == '/api/fleet':

@@ -120,6 +120,7 @@ Manual start without systemd (in this order):
 │   ├── web_ui_server.py     serves the page, drive watchdog, depth colorizer
 │   ├── peer_manager.py      status exchange with the other cars (fleet.env)
 │   ├── explore_manager.py   autonomous mapping (frontier exploration)
+│   ├── depth_obstacles.py   depth camera obstacles (/depth/scan) + comparison with the lidar
 │   ├── map_store.py         saved maps + content hash (same map on two cars?)
 │   └── start_web_ui.sh
 ```
@@ -322,6 +323,37 @@ smoother and a lidar collision monitor (stops for anything within a few cm of th
 never reaches an obstacle within 1.2 s). The web server is the gate: Nav2's output reaches `/cmd_vel`
 only while a goal is active, and `/cmd_vel` itself is clamped to 0.2 m/s and 0.5 rad/s by
 `odom_publisher`. Mapping and navigation can only run together while exploring (below).
+
+### Depth camera obstacles (lidar + camera)
+
+The lidar scans a single plane 16 cm above the floor, so it can't see lower things such as shoes,
+cables or toys. `web_ui/depth_obstacles.py` turns every depth image (about 12 per second) into
+obstacles:
+
+1. **Points:** every 4th pixel becomes a 3-D point in the car's frame.
+2. **Height band:** points 4–22 cm above the floor and up to 2.5 m away count as obstacles. The
+   floor and anything above the car are ignored.
+3. **Scan:** the nearest obstacle in each 0.5° direction becomes `/depth/scan`, covering the
+   camera's 58° view.
+4. **Noise filter:** a direction only counts when it's seen in 2 of the last 3 images.
+
+**How navigation uses both sensors:** the camera has its own layer in both obstacle maps. A shared
+layer wouldn't work, because the lidar scans over a shoe and would erase the camera's mark. The
+collision monitor watches the lidar and the camera, so the car also stops for low objects in front.
+
+**Comparing the two sensors:** the Lidar + camera panel draws camera obstacles in purple, with a
+Lidar / Camera / both selector. Below it is the comparison inside the camera's view, now and since
+start:
+
+- **agree:** both sensors see the same obstacle, within 15 cm.
+- **camera only:** low things under the lidar plane.
+- **lidar only:** things the camera misses: shiny, dark or thin objects, or things too close or
+  too far.
+
+The same comparison is available from `GET /api/depth`.
+
+Points well below the floor (possible drops) are counted but not used for driving. The camera gets
+no readings from glossy floors at all, so it can't detect drops reliably yet.
 
 ### Exploration (the car maps by itself)
 

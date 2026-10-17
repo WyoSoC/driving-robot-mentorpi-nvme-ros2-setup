@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>MentorPi Control</title>
+<title>Koatlus Autonomous Navigation</title>
 <style>
   :root {
     --bg: #0d1117;
@@ -16,6 +16,7 @@
     --ok: #3fb950;
     --warn: #d29922;
     --peer: #58a6ff;
+    --cam: #c678ff;          /* depth camera obstacles */
     --bad: #f85149;
     --radius: 12px;
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -34,7 +35,7 @@
   :root[data-theme="light"] {
     --bg: #f6f8fa; --panel: #ffffff; --panel-2: #eef1f4; --line: #d0d7de;
     --text: #1f2328; --muted: #59636e; --accent: #0a7cc4; --ok: #1a7f37; --warn: #9a6700;
-    --peer: #0969da; --bad: #cf222e;
+    --peer: #0969da; --bad: #cf222e; --cam: #8a3ffc;
     --canvas: #f3f5f7; --grid: #dde3e9; --grid-2: #e6eaee; --dim: #6e7781; --dial: #ffffff;
     --overlay: rgba(255,255,255,.85);
     --map-free: #ffffff; --map-unknown: #d3d9df; --map-occ: #1f2328;
@@ -87,6 +88,8 @@
   .slam-bar input { background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
     border-radius: 8px; padding: 4px 8px; width: 10em; max-width: 100%; }
   .slam-info { font-size: 11px; color: var(--muted); margin-top: 4px; }
+  #cmpInfo b { font-weight: 600; } #cmpInfo .cam { color: var(--cam); }
+  .panel h2 .right select + select { margin-left: 4px; }
   .slam-bar select { background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
     border-radius: 8px; padding: 4px 6px; font: inherit; font-size: 12px; }
   .slam-bar[hidden] { display: none; }
@@ -179,7 +182,7 @@
 <body>
 
 <header>
-  <h1>MentorPi <span id="carName">· web control</span></h1>
+  <h1>Koatlus Autonomous Navigation <span id="carName"></span></h1>
   <span class="pill"><span class="dot" id="connDot"></span><span id="connText">Connecting…</span></span>
   <span class="pill" id="battPill" title="Battery">🔋 <span id="battText">--</span></span>
   <button class="btn" id="chargeBtn" aria-pressed="false">⚡ Charging mode: off</button>
@@ -211,7 +214,10 @@
     </div>
   </section>
   <section class="panel" id="lidarPanel">
-    <h2>Lidar <span class="right">
+    <h2>Lidar + camera <span class="right">
+      <select id="obsView" aria-label="Which sensors to show" title="Purple: depth camera obstacles 4-22 cm high (the lidar scans at 16 cm)">
+        <option value="both" selected>Lidar + camera</option><option value="lidar">Lidar</option><option value="camera">Camera</option>
+      </select>
       <select id="lidarRange" aria-label="Lidar view range">
         <option value="1">1 m</option><option value="2" selected>2 m</option>
         <option value="4">4 m</option><option value="8">8 m</option>
@@ -222,7 +228,9 @@
       <div><div class="k">Bearing</div><div class="v" id="lBear">--</div></div>
       <div><div class="k">Front ±30°</div><div class="v" id="lFront">--</div></div>
       <div><div class="k">Points</div><div class="v" id="lPts">--</div></div>
+      <div><div class="k">Camera</div><div class="v" id="cNear">--</div></div>
     </div>
+    <div class="slam-info" id="cmpInfo" title="Inside the camera's view, per direction: both sensors see the same obstacle, only the camera (low things under the lidar plane), or only the lidar (things the camera misses: shiny, dark, thin, too close)">Camera vs lidar: waiting for the depth camera…</div>
   </section>
   </div>
 
@@ -345,7 +353,7 @@ function storageSet(key, val) { try { localStorage.setItem(key, val); } catch { 
 // ---------- Theme (dark / light) ----------
 // Drawing code reads its colours from C (the CSS variables of the current theme).
 const C = { version: 0 };
-const THEME_VARS = ['text', 'muted', 'line', 'canvas', 'grid', 'grid-2', 'dim', 'dial', 'overlay',
+const THEME_VARS = ['text', 'muted', 'cam', 'line', 'canvas', 'grid', 'grid-2', 'dim', 'dial', 'overlay',
                     'map-free', 'map-unknown', 'map-occ'];
 function readTheme() {
   const cs = getComputedStyle(document.documentElement);
@@ -653,6 +661,36 @@ ros.subscribe('/scan_raw', 'sensor_msgs/msg/LaserScan', msg => {
   drawLidar();
 }, 100);
 $('lidarRange').onchange = drawLidar;
+$('obsView').value = storageGet('obsView') || 'both';
+$('obsView').onchange = () => { storageSet('obsView', $('obsView').value); drawLidar(); };
+
+// ---------- Depth camera obstacles (web_ui/depth_obstacles.py) ----------
+// /depth/scan: nearest obstacle 4-22 cm above the floor per direction, in the car frame, camera view only.
+let dscan = null;
+ros.subscribe('/depth/scan', 'sensor_msgs/msg/LaserScan', msg => {
+  dscan = msg;
+  let near = Infinity;
+  msg.ranges.forEach(r => { if (r != null && isFinite(r) && r < near) near = r; });
+  $('cNear').textContent = isFinite(near) ? near.toFixed(2) + ' m' : 'clear';
+  drawLidar();
+}, 150);
+ros.subscribe('/depth/compare', 'std_msgs/msg/String', msg => {
+  let c; try { c = JSON.parse(msg.data); } catch (_e) { return; }
+  const el = $('cmpInfo');
+  if (!c.alive) { el.textContent = 'Camera vs lidar: no depth images (camera off?)'; return; }
+  if (!c.counts) { el.textContent = 'Camera vs lidar: waiting for the lidar…'; return; }
+  const n = c.counts, t = c.totals, tot = t.both + t.camera + t.lidar;
+  const pct = k => tot ? Math.round(100 * t[k] / tot) + '%' : '--';
+  el.innerHTML = `Camera view: <b>${n.both}</b> agree · <b class="cam">${n.camera}</b> camera only` +
+    (c.nearest_camera_only_m != null ? ` (nearest <b class="cam">${c.nearest_camera_only_m.toFixed(2)} m</b>)` : '') +
+    ` · <b>${n.lidar}</b> lidar only` +
+    (c.mean_diff_m != null ? ` · offset ${(c.mean_diff_m * 100).toFixed(0)} cm` : '') +
+    ` — since start ${pct('both')} / <span class="cam">${pct('camera')}</span> / ${pct('lidar')}` +
+    (c.drop_points ? ` · ⚠ ${c.drop_points} points below the floor` : '');
+  el.title = `Since start (${tot} direction samples): agree ${pct('both')}, camera only ${pct('camera')}, ` +
+    `lidar only ${pct('lidar')}. Camera only = low things under the lidar plane; lidar only = things the camera ` +
+    `misses (shiny, dark, thin, too close or too far).`;
+}, 500);
 
 function drawLidar() {
   const { ctx, w, h } = prepCanvas($('lidar'));
@@ -670,7 +708,14 @@ function drawLidar() {
   ctx.beginPath(); ctx.moveTo(cx, cy);
   ctx.arc(cx, cy, range * scale, -Math.PI / 2 - Math.PI / 6, -Math.PI / 2 + Math.PI / 6); ctx.fill();
 
-  if (scan) {
+  const view = $('obsView').value;
+  if (dscan && view !== 'lidar') {          // camera's field of view
+    ctx.fillStyle = 'rgba(198,120,255,.06)';
+    ctx.beginPath(); ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, Math.min(range, dscan.range_max) * scale, -Math.PI / 2 + dscan.angle_min, -Math.PI / 2 + dscan.angle_max);
+    ctx.fill();
+  }
+  if (scan && view !== 'camera') {
     scan.ranges.forEach((r, i) => {
       if (r == null || r < scan.range_min || r > scan.range_max || r > range * 1.05) return;
       const a = scan.angle_min + i * scan.angle_increment;
@@ -678,6 +723,15 @@ function drawLidar() {
       const sy = cy - Math.cos(a) * r * scale;   // laser x (forward) -> screen up
       ctx.fillStyle = r < 0.3 ? '#f85149' : r < 0.6 ? '#d29922' : '#3fb950';
       ctx.fillRect(sx - 1.5, sy - 1.5, 3, 3);
+    });
+  }
+  if (dscan && view !== 'lidar') {          // camera obstacles: purple squares with a ring
+    ctx.fillStyle = C.cam; ctx.strokeStyle = C.cam; ctx.lineWidth = 1;
+    dscan.ranges.forEach((r, i) => {
+      if (r == null || !isFinite(r) || r > range * 1.05) return;
+      const a = dscan.angle_min + i * dscan.angle_increment;
+      const sx = cx - Math.sin(a) * r * scale, sy = cy - Math.cos(a) * r * scale;
+      ctx.fillRect(sx - 2, sy - 2, 4, 4);
     });
   }
   drawCar(ctx, cx, cy, 0, scale);
@@ -939,7 +993,7 @@ async function slamPoll() {
   }
   const m = st.map;
   if (mapMode === 'slam') $('slamInfo').textContent = m
-    ? `${(m.width * m.resolution).toFixed(1)} × ${(m.height * m.resolution).toFixed(1)} m · ${m.resolution * 100} cm/px` +
+    ? `${(m.width * m.resolution).toFixed(1)} × ${(m.height * m.resolution).toFixed(1)} m · ${Math.round(m.resolution * 100)} cm/px` +
       (st.pose ? ` · car at (${st.pose[0].toFixed(2)}, ${st.pose[1].toFixed(2)}) m, ${deg(st.pose[2]).toFixed(0)}°` : '') +
       (st.maps.length ? ` · saved: ${st.maps.join(', ')}` : '')
     : (st.running ? 'waiting for the first map…' : `Not mapping.${st.maps.length ? ' Saved maps: ' + st.maps.join(', ') : ''}`);
@@ -1004,7 +1058,7 @@ const PEER_MODE = { charging: 'charging', navigating: 'navigating', mapping: 'ma
 async function fleetPoll() {
   let f;
   try { f = await (await fetch('/api/fleet')).json(); } catch { return; }
-  if (fleet.car === null && f.car) { $('carName').textContent = `· ${f.car}`; document.title = `MentorPi ${f.car}`; }
+  if (fleet.car === null && f.car) { $('carName').textContent = `· ${f.car}`; document.title = `Koatlus · ${f.car}`; }
   const before = new Map(fleet.peers.map(p => [p.car, p.online]));
   fleet.car = f.car; fleet.peers = f.peers || [];
   for (const p of fleet.peers) {
