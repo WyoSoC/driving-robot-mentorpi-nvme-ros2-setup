@@ -53,6 +53,8 @@ class NavManager:
         self.pose_set = False
         self.last_nav_cmd = None
         self.moving = False
+        self.slam_mode = False
+        self.goal_seq = 0
 
         self.cmd_pub = node.create_publisher(Twist, '/cmd_vel', 1)
         self.pose_pub = node.create_publisher(PoseWithCovarianceStamped, '/initialpose', 1)
@@ -88,11 +90,29 @@ class NavManager:
             self.proc = subprocess.Popen(LAUNCH + [f'map:={os.path.join(MAPS_DIR, name + ".yaml")}'],
                                          start_new_session=True,
                                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            self.map_name, self.started_at = name, time.time()
+            self.map_name, self.started_at, self.slam_mode = name, time.time(), False
             self.goal, self.goal_state, self.plan, self.pose, self.pose_set = None, 'idle', [], None, False
             self.message = f'navigation starting on "{name}" (~20 s); then set the car\'s position on the map'
             self.node.get_logger().info(f'navigation started on map {name}')
             return True, self.message
+
+    def start_on_slam(self):
+        """Nav2 on the live map of the running SLAM (exploration). SLAM localizes: no position to set."""
+        with self.lock:
+            if self.running():
+                return False, 'navigation is already running'
+            if not self.slam.running():
+                return False, 'start mapping first'
+            self.proc = subprocess.Popen(LAUNCH + ['slam:=true'], start_new_session=True,
+                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.map_name, self.started_at, self.slam_mode = None, time.time(), True
+            self.goal, self.goal_state, self.plan, self.pose, self.pose_set = None, 'idle', [], None, True
+            self.message = 'navigation starting on the live map'
+            self.node.get_logger().info('navigation started on the live SLAM map')
+            return True, self.message
+
+    def ready(self):
+        return self.running() and self.client.server_is_ready()
 
     def stop(self):
         self.cancel()
@@ -167,27 +187,40 @@ class NavManager:
         goal.pose.pose.position.x, goal.pose.pose.position.y = x, y
         goal.pose.pose.orientation.z, goal.pose.pose.orientation.w = math.sin(yaw / 2), math.cos(yaw / 2)
         self.goal, self.goal_state, self.feedback, self.plan = [x, y, yaw], 'sending', {}, []
-        fut = self.client.send_goal_async(goal, feedback_callback=self.on_feedback)
-        fut.add_done_callback(self.on_goal_response)
+        self.goal_seq += 1
+        seq = self.goal_seq
+        fut = self.client.send_goal_async(goal, feedback_callback=lambda m: self.on_feedback(m, seq))
+        fut.add_done_callback(lambda f: self.on_goal_response(f, seq))
         self.message = f'going to ({x:.2f}, {y:.2f})'
         self.node.get_logger().info(self.message)
         return True, self.message
 
-    def on_goal_response(self, fut):
+    # Answers for an older goal (replaced or canceled meanwhile) are ignored: seq != self.goal_seq.
+    def on_goal_response(self, fut, seq):
         handle = fut.result()
+        if seq != self.goal_seq or self.goal_state != 'sending':
+            if handle.accepted and seq != self.goal_seq:
+                pass   # a newer goal preempts it in bt_navigator
+            elif handle.accepted:
+                handle.cancel_goal_async()   # canceled before it was accepted
+            return
         if not handle.accepted:
             self.goal_state, self.message = 'rejected', 'goal rejected'
             return
         self.goal_handle, self.goal_state = handle, 'active'
-        handle.get_result_async().add_done_callback(self.on_result)
+        handle.get_result_async().add_done_callback(lambda f: self.on_result(f, seq))
 
-    def on_feedback(self, msg):
+    def on_feedback(self, msg, seq):
+        if seq != self.goal_seq:
+            return
         fb = msg.feedback
         self.feedback = {'distance_left': round(fb.distance_remaining, 2),
                          'recoveries': fb.number_of_recoveries,
                          'time_s': fb.navigation_time.sec}
 
-    def on_result(self, fut):
+    def on_result(self, fut, seq):
+        if seq != self.goal_seq or self.goal_state != 'active':
+            return
         status = fut.result().status
         self.goal_handle = None
         self.goal_state = {GoalStatus.STATUS_SUCCEEDED: 'succeeded', GoalStatus.STATUS_CANCELED: 'canceled',
@@ -242,6 +275,7 @@ class NavManager:
                 meta = None
         return {
             'running': self.running(),
+            'slam_mode': self.slam_mode and self.running(),
             'uptime_s': round(time.time() - self.started_at) if self.running() else None,
             'map_name': self.map_name if self.running() else None,
             'map': meta if self.running() else None,

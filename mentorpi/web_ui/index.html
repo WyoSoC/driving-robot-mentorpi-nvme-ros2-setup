@@ -287,6 +287,11 @@
       <button class="btn" id="slamStop">Stop</button>
       <input id="slamName" placeholder="map name" maxlength="40">
       <button class="btn" id="slamSave">Save map</button>
+      <select id="exploreRadius" title="Exploration stays within this distance of where it starts">
+        <option value="3">≤ 3 m</option><option value="5" selected>≤ 5 m</option><option value="8">≤ 8 m</option><option value="0">no limit</option>
+      </select>
+      <button class="btn" id="exploreStart" title="Map by itself: drive to the edges of the map until none are left, return, save">🧭 Explore</button>
+      <button class="btn" id="exploreStop">Stop exploring</button>
       <span class="slam-info" id="slamMsg"></span>
     </div>
     <canvas id="slamMap"></canvas>
@@ -820,6 +825,23 @@ async function slamApi(action, query = '') {
   slamPoll();
 }
 $('slamStart').onclick = () => slamApi('start');
+$('exploreStart').onclick = async () => {
+  const r = $('exploreRadius').value;
+  if (!confirm('Start exploring?\n\nThe car drives by itself (≤ 0.2 m/s) to map the area' +
+               (r !== '0' ? ` within ${r} m of where it is now` : '') + ', then returns and saves the map.\n\n' +
+               'It CANNOT see drops: block stairs and ledges, or keep the distance small.\n' +
+               'Stay nearby. E-STOP, the joystick or "Stop exploring" stops it.')) return;
+  const j = await (await fetch(`/api/explore/start?radius=${r}`, { method: 'POST' })).json().catch(() => ({}));
+  $('slamMsg').textContent = j.message || '';
+  if (j.message) log(`Explore: ${j.message}`);
+  slamPoll();
+};
+$('exploreStop').onclick = async () => {
+  const j = await (await fetch('/api/explore/stop', { method: 'POST' })).json().catch(() => ({}));
+  if (j.message) log(`Explore: ${j.message}`);
+  slamPoll();
+};
+let exploreLast = '';
 $('slamStop').onclick = () => slamApi('stop');
 $('slamSave').onclick = () => {
   const name = $('slamName').value.trim() || `map_${new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '')}`;
@@ -835,7 +857,17 @@ async function slamPoll() {
   slam.st = st;
   if (mapMode === 'slam') $('slamState').style.color = st.running ? 'var(--ok)' : '';
   if (mapMode === 'slam') $('slamState').textContent = st.running ? `mapping ${Math.floor(st.uptime_s / 60)}:${String(st.uptime_s % 60).padStart(2, '0')}` : 'off';
+  const ex = st.explore || {};
   $('slamStart').disabled = st.running || !!(nav.st && nav.st.running); $('slamStop').disabled = !st.running; $('slamSave').disabled = !st.map;
+  $('exploreStart').disabled = ex.active || !!(nav.st && nav.st.running && !nav.st.slam_mode) || chargeMode !== 'off';
+  $('exploreStop').disabled = !ex.active; $('exploreRadius').disabled = !!ex.active;
+  if (ex.message && ex.message !== exploreLast) {
+    exploreLast = ex.message; log(`Explore: ${ex.message}`); $('slamMsg').textContent = ex.message;
+  }
+  if (mapMode === 'slam' && ex.active) {
+    $('slamState').textContent = `${ex.state} ${ex.elapsed_s != null ? Math.floor(ex.elapsed_s / 60) + ':' + String(ex.elapsed_s % 60).padStart(2, '0') : ''}`;
+    $('slamState').style.color = 'var(--warn)';
+  }
   if (st.map && st.map.version !== slam.imgVersion) {
     const img = new Image();
     img.onload = () => { slam.img = img; slam.imgVersion = st.map.version; drawSlam(); };
@@ -847,6 +879,7 @@ async function slamPoll() {
       (st.pose ? ` · car at (${st.pose[0].toFixed(2)}, ${st.pose[1].toFixed(2)}) m, ${deg(st.pose[2]).toFixed(0)}°` : '') +
       (st.maps.length ? ` · saved: ${st.maps.join(', ')}` : '')
     : (st.running ? 'waiting for the first map…' : `Not mapping.${st.maps.length ? ' Saved maps: ' + st.maps.join(', ') : ''}`);
+  if (mapMode === 'slam' && ex.active) $('slamInfo').textContent += ' · Orange: unmapped edges · square: start · green: next goal';
   drawSlam();
 }
 function drawSlam() {
@@ -867,6 +900,24 @@ function drawSlam() {
     ctx.strokeStyle = '#3fb6ff'; ctx.lineWidth = 2; ctx.beginPath();
     slam.path.forEach((p, i) => { const [cx, cy] = toC(p[0], p[1]); i ? ctx.lineTo(cx, cy) : ctx.moveTo(cx, cy); });
     ctx.stroke();
+  }
+  const ex = st.explore || {};
+  if (ex.home && ex.radius && ex.active) {   // the fence
+    const [hx, hy] = toC(ex.home[0], ex.home[1]);
+    ctx.save(); ctx.setLineDash([5, 5]); ctx.strokeStyle = '#d29922'; ctx.lineWidth = 1.5; ctx.beginPath();
+    ctx.arc(hx, hy, ex.radius / m.resolution * s, 0, 2 * Math.PI); ctx.stroke(); ctx.restore();
+  }
+  if (ex.home && (ex.active || ex.state === 'done')) {
+    const [hx, hy] = toC(ex.home[0], ex.home[1]);
+    ctx.strokeStyle = '#d29922'; ctx.lineWidth = 2; ctx.strokeRect(hx - 5, hy - 5, 10, 10);
+  }
+  if (ex.cells && ex.cells.length) {           // frontier: edge of the mapped floor
+    ctx.fillStyle = '#ff9f1a';
+    for (const c of ex.cells) { const [cx, cy] = toC(c[0], c[1]); ctx.fillRect(cx - 1.5, cy - 1.5, 3, 3); }
+  }
+  if (ex.goal && ex.active) {
+    const [gx, gy] = toC(ex.goal[0], ex.goal[1]);
+    arrow(ctx, gx, gy, ex.goal[2], 11, '#3fb950', true);
   }
   if (st.pose) {
     const [cx, cy] = toC(st.pose[0], st.pose[1]), a = -st.pose[2], r = 9;

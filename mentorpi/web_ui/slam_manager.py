@@ -48,6 +48,7 @@ class SlamManager:
         self.version = 0
         self.last_render = 0.0
         self.pending_map = None
+        self.grid = None
         self.pose = None             # x, y, yaw in map frame
         self.path = []
         self.message = ''
@@ -77,7 +78,7 @@ class SlamManager:
         with self.lock:
             if self.running():
                 return 'already running'
-            self.path, self.pose, self.png, self.meta = [], None, None, None
+            self.path, self.pose, self.png, self.meta, self.grid = [], None, None, None, None
             self.proc = subprocess.Popen(LAUNCH, cwd=MAPS_DIR, start_new_session=True,
                                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             self.started_at = time.time()
@@ -106,6 +107,7 @@ class SlamManager:
     # ---- map + pose ----------------------------------------------------------
     def on_map(self, msg):
         self.pending_map = msg
+        self.grid = msg          # latest raw map (exploration)
 
     def render_pending(self):
         msg = self.pending_map

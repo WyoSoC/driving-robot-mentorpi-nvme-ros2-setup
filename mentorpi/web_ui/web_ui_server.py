@@ -17,6 +17,8 @@
   /api/nav/cancel. Joystick input from the page cancels a navigation goal.
 - SLAM (slam_manager.py): GET /api/slam (status, pose, path), GET /api/slam/map.png,
   POST /api/slam/start | /api/slam/stop | /api/slam/save?name=NAME
+- Exploration (explore_manager.py): POST /api/explore/start?radius=M (0 = no limit) | /api/explore/stop;
+  its status is in GET /api/slam ("explore"). Maps by itself: SLAM + Nav2 on the live map + frontiers.
 - Other cars (peer_manager.py, peers from fleet.env): GET /api/self = this car's status (what the other
   cars poll), GET /api/fleet = this car + the latest status of every other car, GET /api/maps = maps here
   and on the other cars, GET /api/maps/file?name=&ext=png|yaml (a map for another car to copy).
@@ -48,6 +50,7 @@ from std_msgs.msg import String, UInt16
 
 import map_store
 from battery_estimator import BatteryEstimator
+from explore_manager import Explorer
 from nav_manager import NavManager
 from peer_manager import PeerManager
 from slam_manager import SlamManager
@@ -102,13 +105,15 @@ class WebBridge(Node):
 
         self.slam = SlamManager(self)
         self.nav = NavManager(self, self.slam.tf, self.slam)
+        self.explorer = Explorer(self, self.slam, self.nav)
         self.peers = PeerManager(CAR_NAME, PEERS, self.get_logger())
 
     def self_status(self):
         """What the other cars see of this one (GET /api/self)."""
         nav = self.nav.status()
         slam_on = self.slam.running()
-        mode = ('charging' if self.charging != 'off' else 'navigating' if nav['running']
+        mode = ('charging' if self.charging != 'off' else 'exploring' if self.explorer.active()
+                else 'navigating' if nav['running']
                 else 'mapping' if slam_on else 'idle')
         return {
             'car': CAR_NAME,
@@ -134,6 +139,10 @@ class WebBridge(Node):
         self.battery.set_charging_mode(self.charging == 'on')
 
     def request_charging(self, on):
+        if on and self.explorer.active():
+            self.explorer.stop('charging mode')
+        if on and self.nav.running():
+            self.nav.stop()
         if self.slam.running():
             self.slam.stop()
         with open(os.path.join(STATE_DIR, 'charging_request'), 'w') as f:
@@ -214,7 +223,7 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
             return self._send(200, {'mode': self.node.charging})
         if url.path == '/api/slam':
             q = urllib.parse.parse_qs(url.query)
-            return self._send(200, slam.status(int(q.get('since', ['0'])[0] or 0)))
+            return self._send(200, slam.status(int(q.get('since', ['0'])[0] or 0)) | {'explore': self.node.explorer.status()})
         if url.path == '/api/slam/map.png':
             png = slam.png
             return self._send(200, png, 'image/png') if png else self._send(404, {'error': 'no map yet'})
@@ -307,6 +316,21 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
             except (KeyError, ValueError):
                 return self._send(400, {'ok': False, 'message': 'x, y (m) and yaw (rad) needed'})
             return self._send(200 if ok else 400, {'ok': ok, 'message': msg})
+        if url.path == '/api/explore/start':
+            try:
+                radius = float(urllib.parse.parse_qs(url.query).get('radius', ['0'])[0] or 0)
+                if not math.isfinite(radius) or radius < 0:
+                    raise ValueError
+            except ValueError:
+                return self._send(400, {'ok': False, 'message': 'radius in m (0 = no limit)'})
+            dry = urllib.parse.parse_qs(url.query).get('dry', ['0'])[0] == '1'
+            ok, msg = self.node.explorer.start(radius, dry=dry)
+            return self._send(200 if ok else 400, {'ok': ok, 'message': msg})
+        if url.path == '/api/explore/stop':
+            ok, msg = self.node.explorer.stop()
+            return self._send(200, {'ok': ok, 'message': msg})
+        if url.path == '/api/slam/stop' and (self.node.explorer.active() or self.node.nav.slam_mode):
+            self.node.explorer.stop('mapping stopped')
         if url.path == '/api/slam/start' and self.node.nav.running():
             return self._send(400, {'ok': False, 'message': 'stop navigation first'})
         if url.path == '/api/slam/start':

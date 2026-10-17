@@ -119,6 +119,7 @@ Manual start without systemd (in this order):
 │   ├── index.html           the control page (no external dependencies)
 │   ├── web_ui_server.py     serves the page, drive watchdog, depth colorizer
 │   ├── peer_manager.py      status exchange with the other cars (fleet.env)
+│   ├── explore_manager.py   autonomous mapping (frontier exploration)
 │   ├── map_store.py         saved maps + content hash (same map on two cars?)
 │   └── start_web_ui.sh
 ```
@@ -320,7 +321,34 @@ turning on the spot (`nav/navigate_ackermann.xml`: clear costmaps, wait, back up
 smoother and a lidar collision monitor (stops for anything within a few cm of the body, slows so it
 never reaches an obstacle within 1.2 s). The web server is the gate: Nav2's output reaches `/cmd_vel`
 only while a goal is active, and `/cmd_vel` itself is clamped to 0.2 m/s and 0.5 rad/s by
-`odom_publisher`. Mapping and navigation cannot run at the same time.
+`odom_publisher`. Mapping and navigation can only run together while exploring (below).
+
+### Exploration (the car maps by itself)
+
+Map panel, **Mapping** mode: pick a distance limit (3, 5 or 8 m, or none) and press **🧭 Explore**.
+The car then works like this (`web_ui/explore_manager.py`):
+
+1. It starts mapping (if mapping isn't already running) and navigation on the live map
+   (`nav.launch.py slam:=true`, about 30 s).
+2. It drives to the best "frontier", the edge between mapped floor and unmapped space. On the map,
+   frontiers are orange, the next goal is green and the start is a square.
+3. It repeats until no frontier is left within the limit, then drives back to the start and saves
+   the map as `explore_YYYYMMDD_HHMM`. Mapping keeps running, so you can also drive further by hand.
+
+How goals are chosen and checked:
+
+- Goals are only placed on mapped free floor: ≥ 0.30 m from walls, ≥ 0.15 m from unmapped space,
+  and ≥ 0.7 m from the car.
+- The planner never plans through unmapped space.
+- A goal that fails, or takes more than 2 minutes, is blacklisted. After 6 failures in a row it gives up.
+
+**Stop exploring**, the E-STOP, the joystick, Cancel, charging mode, low battery or the 20-minute
+limit each stop it. Navigation then stops and mapping keeps running, so the map can be saved.
+
+**Drops (stairs, ledges) are not detected.** The lidar scans a flat plane 12–15 cm high and sees over
+a stair edge, so the floor past it looks free. The depth camera looks straight ahead, and on a glossy
+floor it gets no return from the floor at all. Block stairs, or keep the distance limit inside the
+safe area.
 ### What you need
 - The target car: Raspberry Pi 5 MentorPi M1 (Ackermann), with the same USB devices
   (STM32 controller `1a86:55d4`, MS200 lidar `1a86:7523`, HP60C camera `3482:6723`).
