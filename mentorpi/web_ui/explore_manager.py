@@ -25,7 +25,10 @@ import time
 from datetime import datetime
 
 import numpy as np
+from geometry_msgs.msg import Twist
+from rclpy.qos import qos_profile_sensor_data
 from scipy import ndimage
+from sensor_msgs.msg import LaserScan
 
 FREE_MAX = 25            # occupancy 0..100: below = free
 OCC_MIN = 65             # at or above = wall / obstacle
@@ -49,6 +52,13 @@ START_TIMEOUT = 90       # s for SLAM + Nav2 to come up
 NO_FRONTIER_CHECKS = 3   # consecutive empty checks -> done
 STEP_S = 1.0
 SMOOTH_CELLS = 2          # closing iterations on the free space
+# Escape: when goals fail while the car stands still in a tight spot (the planner won't start from there),
+# drive straight out (backwards if there is room behind, else forwards) before trying the next goal.
+ESCAPE_M = 0.25          # m to drive straight
+ESCAPE_SPEED = 0.06      # m/s
+ESCAPE_CLEAR = 0.30      # m free needed in the driving direction (lidar, from the lidar centre + body)
+ESCAPE_MAX = 3           # escapes in a row without any goal succeeding -> stop escaping
+SCAN_TOPIC = '/scan_raw'  # lidar_frame = base_footprint orientation (0 = forward, counter-clockwise)
 
 
 def frontier_goals(grid, res, origin, car_xy, fence_xy, radius, blacklist, failed_centers=(), car_yaw=None):
@@ -160,6 +170,7 @@ class Explorer:
         self.progress_at, self.progress_xy = None, None
         self.progress_known = self.known_at_send = 0.0
         self.reached = self.partial = self.failed = 0
+        self.send_xy = None
         self.mapped_m2 = 0.0
         self.fails = 0
         self.empty_checks = 0
@@ -168,6 +179,11 @@ class Explorer:
         self.saved_as = None
         self.own_cancel = False
         self.dry = False
+        self.scan = None
+        self.escapes = 0
+        self.unreached = 0
+        self.cmd_pub = node.create_publisher(Twist, '/cmd_vel', 1)
+        node.create_subscription(LaserScan, SCAN_TOPIC, self._on_scan, qos_profile_sensor_data)
         threading.Thread(target=self._loop, daemon=True).start()
 
     def active(self):
@@ -195,6 +211,8 @@ class Explorer:
             self.blacklist, self.visited, self.failed_centers = [], [], []
             self.goal_center = None
             self.reached = self.partial = self.failed = 0
+            self.escapes = self.unreached = 0
+            self.send_xy = None
             self.fails = self.empty_checks = self.quick_retries = 0
             self.goal_sent_at = None
             self.saved_as = None
@@ -230,6 +248,61 @@ class Explorer:
                 self.log.error(f'exploration error: {exc!r}')
                 if self.active():
                     self.stop(f'exploration error: {exc}')
+
+    def _on_scan(self, msg):
+        self.scan = msg
+
+    def _clearance(self, center_deg, half_width_deg=25):
+        """Smallest lidar range within +-half_width of a direction (deg, 0 = forward), or None."""
+        s = self.scan
+        if s is None:
+            return None
+        r = np.asarray(s.ranges, dtype=float)
+        a = np.degrees(s.angle_min + np.arange(len(r)) * s.angle_increment)
+        d = (a - center_deg + 180.0) % 360.0 - 180.0
+        sel = (np.abs(d) <= half_width_deg) & np.isfinite(r) & (r > 0.05)
+        return float(r[sel].min()) if sel.any() else None
+
+    def _escape(self):
+        """Drive straight out of a tight spot. Returns True if the car moved."""
+        if self.escapes >= ESCAPE_MAX:
+            return False
+        back, front = self._clearance(180), self._clearance(0)
+        body = {180: 0.13, 0: 0.14}          # lidar centre -> rear / front bumper
+        options = [(c - body[d], d) for c, d in ((back, 180), (front, 0)) if c is not None]
+        options = [o for o in options if o[0] >= ESCAPE_CLEAR]
+        if not options:
+            self.log.info(f'escape: no room (behind {back}, ahead {front})')
+            return False
+        room, direction = max(options) if not any(d == 180 for _, d in options) else \
+            next(o for o in options if o[1] == 180)            # prefer backing out the way it came
+        sign = -1.0 if direction == 180 else 1.0
+        self.escapes += 1
+        self.message = f'tight spot: driving {"back" if sign < 0 else "forward"} {ESCAPE_M:.2f} m to get out'
+        self.log.info(f'escape {self.escapes}: {self.message} (room {room:.2f} m)')
+        start = self.slam.pose
+        t0 = time.monotonic()
+        moved = 0.0
+        twist = Twist()
+        twist.linear.x = sign * ESCAPE_SPEED
+        while self.active() and time.monotonic() - t0 < ESCAPE_M / ESCAPE_SPEED + 3.0:
+            if time.monotonic() - self.node.last_cmd_time < 1.0 and self.node.moving:
+                break                                   # someone is driving with the joystick
+            c = self._clearance(direction)
+            if c is not None and c - body[direction] < 0.12:
+                break
+            pose = self.slam.pose
+            if start and pose:
+                moved = math.hypot(pose[0] - start[0], pose[1] - start[1])
+                if moved >= ESCAPE_M:
+                    break
+            self.cmd_pub.publish(twist)
+            time.sleep(0.1)
+        self.cmd_pub.publish(Twist())
+        time.sleep(0.5)
+        self.cmd_pub.publish(Twist())
+        self.log.info(f'escape done: moved {moved:.2f} m')
+        return moved > 0.05
 
     def _known_m2(self):
         g = self._grid()
@@ -310,20 +383,35 @@ class Explorer:
                 else:   # the person at the controls (joystick / E-stop / Cancel goal)
                     return self.stop('stopped by you')
             elif gs in ('aborted', 'rejected'):
+                moved = pose is not None and self.send_xy is not None and \
+                    math.hypot(pose[0] - self.send_xy[0], pose[1] - self.send_xy[1]) > STUCK_M
+                stuck_here = not moved and self._known_m2() - self.known_at_send < GAIN_OK
+                was_home = self.state == 'returning'
                 self._failed('could not reach it')
+                if stuck_here and self._escape():
+                    self.fails = max(0, self.fails - 1)     # not the frontier's fault: try it again
+                    if self.goal_center and self.goal_center in self.failed_centers:
+                        self.failed_centers.remove(self.goal_center)
+                    if was_home:
+                        self.state = 'returning'
+                        self._send(self.home)
+                        return
+                elif was_home:
+                    return self._finish()
             elif gs == 'succeeded':
                 if self.state == 'returning':
                     return self._finish()
                 self.fails = 0
                 self.quick_retries = 0
                 self.reached += 1
+                self.escapes = 0
                 self.visited.append(self.goal[:2])
                 self.goal = None
             else:
                 return   # idle: the goal response has not arrived yet
             if self.fails >= MAX_FAILS:
                 return self.stop(f'{MAX_FAILS} goals in a row could not be reached')
-            if self.state == 'returning':   # could not get home: finish where we are
+            if self.state == 'returning' and self.goal is None:   # could not get home: finish where we are
                 return self._finish()
 
         if self.state == 'returning':
@@ -341,7 +429,8 @@ class Explorer:
             self.empty_checks += 1
             self.message = f'no frontier left? checking ({self.empty_checks}/{NO_FRONTIER_CHECKS})'
             if self.empty_checks >= NO_FRONTIER_CHECKS:
-                self.state, self.message = 'returning', 'map complete: driving back to the start'
+                left = f' ({len(self.failed_centers)} unmapped edges could not be reached)' if self.failed_centers else ''
+                self.state, self.message = 'returning', f'map complete{left}: driving back to the start'
                 self.goal_center = None
                 self._send(self.home)
             return
@@ -364,6 +453,7 @@ class Explorer:
         self.goal, self.goal_sent_at, self.own_cancel = list(goal), time.monotonic(), False
         self.progress_at, self.progress_xy = time.monotonic(), (self.slam.pose or goal)[:2]
         self.progress_known = self.known_at_send = self._known_m2()
+        self.send_xy = self.slam.pose[:2] if self.slam.pose else None
 
     def _failed(self, why):
         quick = self.goal_sent_at is not None and time.monotonic() - self.goal_sent_at < 3.0
@@ -387,6 +477,7 @@ class Explorer:
             if self.goal_center:
                 self.failed_centers.append(self.goal_center)
             self.failed += 1
+            self.unreached += 1
             self.log.info(f'exploration goal {self.goal} failed ({why}), nothing new mapped: skipping its frontier')
         self.fails += 1
         self.goal = None
@@ -416,7 +507,8 @@ class Explorer:
         if self.nav.running() and self.nav.slam_mode:
             self.nav.stop()
         self.state = 'done'
-        self.message = (f'map complete, saved as "{name}"' if ok else f'map complete, but saving failed ({msg}): '
+        left = f' ({len(self.failed_centers)} edges not reachable)' if self.failed_centers else ''
+        self.message = (f'map complete{left}, saved as "{name}"' if ok else f'map complete, but saving failed ({msg}): '
                         'press Save map') + '; mapping still running'
         self.goal = None
         self.log.info(self.message)
