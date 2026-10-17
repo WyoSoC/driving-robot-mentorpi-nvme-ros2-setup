@@ -42,11 +42,9 @@
   .pill.batt-low { color: var(--warn); border-color: var(--warn); }
   .pill.batt-critical { color: #fff; background: var(--bad); border-color: var(--bad); }
   .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); }
-  #chargeBtn { padding: 4px 10px; font-size: 12px; border-radius: 999px; }
-  .banner { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: -4px 0 16px;
-    padding: 10px 14px; border-radius: 10px; border: 1px solid var(--ok); color: var(--text);
-    background: rgba(63,185,80,.10); font-size: 14px; }
-  .banner[hidden] { display: none; }
+  #chargeBtn { padding: 4px 10px; font-size: 12px; border-radius: 999px; color: var(--muted); }
+  #chargeBtn.on { color: #111; background: var(--ok); border-color: var(--ok); font-weight: 600; }
+  #chargeBtn.switching { color: var(--warn); border-color: var(--warn); }
   .spacer { flex: 1; }
 
   .estop { border: 0; border-radius: 10px; padding: 10px 18px; font-weight: 700; font-size: 14px;
@@ -152,16 +150,10 @@
   <h1>MentorPi <span>· web control</span></h1>
   <span class="pill"><span class="dot" id="connDot"></span><span id="connText">Connecting…</span></span>
   <span class="pill" id="battPill" title="Battery">🔋 <span id="battText">--</span></span>
-  <button class="btn" id="chargeBtn" title="Stop camera, lidar, mapping and driving so the battery charges faster. The web page stays on.">⚡ Charging mode</button>
+  <button class="btn" id="chargeBtn" aria-pressed="false">⚡ Charging mode: off</button>
   <span class="spacer"></span>
   <button class="estop" id="estop" title="Emergency stop (Space)">E-STOP</button>
 </header>
-
-<div class="banner" id="chargeBanner" hidden>
-  <span id="chargeBannerText">⚡ Charging mode: camera, lidar, mapping and driving are off so the battery charges faster.</span>
-  <span class="spacer"></span>
-  <button class="btn" id="chargeResume">Resume normal mode</button>
-</div>
 
 <main>
   <div class="col">
@@ -736,31 +728,39 @@ ros.subscribe('/ros_robot_controller/button', 'ros_robot_controller_msgs/msg/But
 // Manual: stops the robot software on the car (host: system/charging_mode.sh); this page and the
 // battery reading stay up. A reboot always comes back in normal mode.
 let chargeMode = null;
+const CHARGE_TIP = {
+  off: 'Charging mode is OFF. Click to turn it on: camera, lidar, mapping and driving stop so the battery ' +
+       'charges faster. The page and the battery / time-to-full estimate stay on.',
+  on: 'Charging mode is ON: camera, lidar, mapping and driving are off. The battery / time-to-full estimate ' +
+      'keeps running. Click to turn it off (the robot software restarts, ~30 s).',
+  switching: 'Switching… (about 30 s)',
+};
 async function pollCharging() {
   let m;
   try { m = (await (await fetch('/api/charging')).json()).mode; } catch { return; }
   if (m === chargeMode) return;
   if (chargeMode !== null) log(m === 'on' ? 'Charging mode on: sensors and driving off'
-    : m === 'off' ? 'Normal mode: robot software starting (~30 s)' : 'Switching mode…');
+    : m === 'off' ? 'Charging mode off: robot software starting (~30 s)' : 'Charging mode: switching…');
   chargeMode = m;
-  $('chargeBanner').hidden = m === 'off';
-  $('chargeBannerText').textContent = m === 'switching' ? '⏳ Switching mode… (about 30 s)'
-    : '⚡ Charging mode: camera, lidar, mapping and driving are off so the battery charges faster.';
-  $('chargeResume').disabled = m !== 'on';
-  $('chargeBtn').disabled = m !== 'off';
+  const b = $('chargeBtn');
+  b.textContent = m === 'on' ? '⚡ Charging mode: ON' : m === 'off' ? '⚡ Charging mode: off' : '⏳ Switching…';
+  b.className = 'btn' + (m === 'on' ? ' on' : m === 'switching' ? ' switching' : '');
+  b.setAttribute('aria-pressed', String(m === 'on'));
+  b.title = CHARGE_TIP[m] || '';
+  b.disabled = m === 'switching';
 }
-async function setCharging(on) {
-  if (on && !confirm('Switch to charging mode?\n\nCamera, lidar, mapping and driving stop until you press "Resume". ' +
-                     'The web page and battery reading stay on.')) return;
-  $('chargeBtn').disabled = $('chargeResume').disabled = true;
+async function toggleCharging() {
+  const on = chargeMode !== 'on';
+  if (on && !confirm('Turn charging mode on?\n\nCamera, lidar, mapping and driving stop until you turn it off. ' +
+                     'The web page and the battery estimate stay on.')) return;
+  $('chargeBtn').disabled = true;
   try {
     const r = await (await fetch(`/api/charging?on=${on ? 1 : 0}`, { method: 'POST' })).json();
     if (!r.ok) log(`Charging mode: ${r.message}`);
   } catch (e) { log(`Charging mode request failed: ${e}`); }
   setTimeout(pollCharging, 500);
 }
-$('chargeBtn').addEventListener('click', () => setCharging(true));
-$('chargeResume').addEventListener('click', () => setCharging(false));
+$('chargeBtn').addEventListener('click', toggleCharging);
 setInterval(pollCharging, 2000);
 pollCharging();
 
