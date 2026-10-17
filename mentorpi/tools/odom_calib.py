@@ -89,9 +89,14 @@ class Calib:
             m = self.scan
         if m is None:
             return None
-        pts = [(r * math.cos(a), r * math.sin(a)) for i, r in enumerate(m.ranges)
+        pts = [(r * math.cos(a), r * math.sin(a), a) for i, r in enumerate(m.ranges)
                for a in [wrap(m.angle_min + i * m.angle_increment)]
                if abs(a) <= math.radians(half_deg) and m.range_min < r < m.range_max and math.isfinite(r)]
+        centre = [x for x, _, a in pts if abs(a) <= math.radians(5)]
+        if len(centre) < 3:
+            return None
+        cx = statistics.median(centre)   # keep only points near the wall straight ahead (not a doorway beside it)
+        pts = [(x, y) for x, y, _ in pts if abs(x - cx) < 0.25]
         for _ in range(2):
             if len(pts) < 10:
                 return None
