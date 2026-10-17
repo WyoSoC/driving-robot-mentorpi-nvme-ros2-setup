@@ -291,14 +291,17 @@ class Explorer:
         trail, pose = list(self.slam.path), self.slam.pose
         if len(trail) < 4 or pose is None:
             return False
-        pts, dist = [[pose[0], pose[1]]], 0.0
+        # Walk back along the trail, keeping only points that lead steadily away from here: the back-and-
+        # forth wiggles of the last manoeuvres are skipped, the way the car came in remains.
+        pts, dist, far = [[pose[0], pose[1]]], 0.0, 0.0
         for p in reversed(trail):
-            d = math.hypot(p[0] - pts[-1][0], p[1] - pts[-1][1])
-            if d < 0.02:
+            away = math.hypot(p[0] - pose[0], p[1] - pose[1])
+            if away < far + 0.03:
                 continue
-            dist += d
+            far = away
+            dist += math.hypot(p[0] - pts[-1][0], p[1] - pts[-1][1])
             pts.append(p)
-            if dist >= RETRACE_M:
+            if far >= RETRACE_M:
                 break
         if dist < 0.2:
             return False
