@@ -4,6 +4,9 @@
   Pure Pursuit + collision monitor, set up for this car) on a map saved with the Map panel. Not
   together with SLAM (both own the map -> odom transform).
 - set_pose(x, y, yaw): AMCL's starting guess ("Set position" on the page).
+- find_position(): finds the car on the map from one lidar scan (localize.py), no guess needed; runs by
+  itself once Nav2 is up, and from "Find position" on the page. If it is not sure, the best guess is
+  shown and the position is set by hand.
 - go(x, y, yaw) / cancel(): NavigateToPose goal; feedback (distance left, recoveries) for the page.
 - pause(reason) / resume(): right of way (fleet.py): the goal is taken back from Nav2 (state "yielding",
   car stopped) and sent again later, so Nav2 doesn't count the wait as being stuck.
@@ -22,9 +25,13 @@ from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
 from nav2_msgs.action import NavigateToPose
 from nav_msgs.msg import Path
+from sensor_msgs.msg import LaserScan
 from rclpy.action import ActionClient
+from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
 
+import localize
+import map_merge
 import map_store
 
 MAPS_DIR = map_store.MAPS_DIR
@@ -33,6 +40,8 @@ NAV_LOG = '/tmp/nav.log'   # Nav2's output (inside the container), overwritten a
 NAME_RE = map_store.NAME_RE
 CMD_FRESH_S = 0.5          # Nav2 command older than this -> stop
 PLAN_STEP = 0.05           # m between plan points sent to the page
+SCAN_TOPIC = '/scan_raw'
+SCAN_FRESH_S = 1.0
 
 
 def yaw_of(q):
@@ -58,14 +67,20 @@ class NavManager:
         self.moving = False
         self.slam_mode = False
         self.goal_seq = 0
+        self.scan = None
+        self.finding = False
+        self.found = None          # last find_position() result (pose, sure, why, ...)
+        self.auto_find = False     # find the position by itself once Nav2 is up
 
         self.cmd_pub = node.create_publisher(Twist, '/cmd_vel', 1)
         self.pose_pub = node.create_publisher(PoseWithCovarianceStamped, '/initialpose', 1)
         node.create_subscription(Twist, '/nav/cmd_vel', self.on_nav_cmd, 1)
         node.create_subscription(Path, '/plan', self.on_plan, 1)
+        node.create_subscription(LaserScan, SCAN_TOPIC, self.on_scan, qos_profile_sensor_data)
         self.client = ActionClient(node, NavigateToPose, 'navigate_to_pose')
         node.create_timer(0.1, self.gate_watchdog)
         node.create_timer(0.2, self.update_pose)
+        node.create_timer(1.0, self.auto_find_tick)
         self._kill_strays()
 
     # ---- process ---------------------------------------------------------------
@@ -95,7 +110,8 @@ class NavManager:
                                          stdout=open(NAV_LOG, 'w'), stderr=subprocess.STDOUT)
             self.map_name, self.started_at, self.slam_mode = name, time.time(), False
             self.goal, self.goal_state, self.plan, self.pose, self.pose_set = None, 'idle', [], None, False
-            self.message = f'navigation starting on "{name}" (~20 s); then set the car\'s position on the map'
+            self.found, self.auto_find = None, True
+            self.message = f'navigation starting on "{name}" (~20 s); then it finds its position on the map'
             self.node.get_logger().info(f'navigation started on map {name}')
             return True, self.message
 
@@ -110,6 +126,7 @@ class NavManager:
                                          stdout=open(NAV_LOG, 'w'), stderr=subprocess.STDOUT)
             self.map_name, self.started_at, self.slam_mode = None, time.time(), True
             self.goal, self.goal_state, self.plan, self.pose, self.pose_set = None, 'idle', [], None, True
+            self.found, self.auto_find = None, False
             self.message = 'navigation starting on the live map'
             self.node.get_logger().info('navigation started on the live SLAM map')
             return True, self.message
@@ -137,7 +154,7 @@ class NavManager:
             self.stop()
 
     # ---- localization ----------------------------------------------------------
-    def set_pose(self, x, y, yaw):
+    def set_pose(self, x, y, yaw, sigma_m=0.25, sigma_deg=15.0):
         if not self.running():
             return False, 'start navigation first'
         m = PoseWithCovarianceStamped()
@@ -146,8 +163,8 @@ class NavManager:
         m.pose.pose.position.x, m.pose.pose.position.y = x, y
         m.pose.pose.orientation.z, m.pose.pose.orientation.w = math.sin(yaw / 2), math.cos(yaw / 2)
         cov = [0.0] * 36
-        cov[0] = cov[7] = 0.25 ** 2          # +-25 cm
-        cov[35] = math.radians(15) ** 2      # +-15 deg
+        cov[0] = cov[7] = sigma_m ** 2       # by hand: +-25 cm
+        cov[35] = math.radians(sigma_deg) ** 2   # by hand: +-15 deg
         m.pose.covariance = cov
         for _ in range(3):
             self.pose_pub.publish(m)
@@ -155,6 +172,61 @@ class NavManager:
         self.pose_set = True
         self.message = f'position set to ({x:.2f}, {y:.2f}), {math.degrees(yaw):.0f} deg; drive a little to let it settle'
         return True, self.message
+
+    # ---- finding the position from the lidar (localize.py) ------------------------------
+    def on_scan(self, msg):
+        self.scan = (time.monotonic(), msg)
+
+    def auto_find_tick(self):
+        if (self.auto_find and self.ready() and not self.slam_mode and not self.pose_set
+                and not self.finding and self.scan and time.monotonic() - self.scan[0] < SCAN_FRESH_S):
+            self.auto_find = False
+            threading.Thread(target=self.find_position, daemon=True).start()
+
+    def find_position(self):
+        """Find the car on the map from the current lidar scan; set it in AMCL if sure."""
+        if not self.running() or self.slam_mode:
+            return False, 'start navigation on a saved map first'
+        if self.goal_active():
+            return False, 'not while driving to a goal'
+        if self.finding:
+            return False, 'already looking'
+        if not self.scan or time.monotonic() - self.scan[0] > SCAN_FRESH_S:
+            return False, 'no lidar scan'
+        self.finding = True
+        try:
+            msg = self.scan[1]
+            mount = (0.0, 0.0, 0.0)
+            try:
+                t = self.tf.lookup_transform('base_footprint', msg.header.frame_id, Time())
+                mount = (t.transform.translation.x, t.transform.translation.y, yaw_of(t.transform.rotation))
+            except Exception:
+                pass
+            pts = localize.scan_points(msg.ranges, msg.angle_min, msg.angle_increment, mount)
+            m = self.map_meta(self.map_name)
+            grid = map_merge.from_png(map_store.png_bytes(self.map_name), m['resolution'], m['origin'][:2])
+            res = localize.find(grid, pts)
+            self.found = res
+            if res['pose'] is None:
+                self.message = f'could not find the position: {res["why"]}; set it by hand'
+                return False, self.message
+            x, y, yaw = res['pose']
+            where = f'({x:.2f}, {y:.2f}), {math.degrees(yaw):.0f} deg'
+            if not res['sure']:
+                self.message = (f'not sure where the car is (best guess {where}, shown dashed): {res["why"]}. '
+                                f'Set the position by hand')
+                self.node.get_logger().info(f'find position: not sure: {res}')
+                return False, self.message
+            self.set_pose(x, y, yaw, sigma_m=0.1, sigma_deg=5.0)
+            self.message = (f'found its position on the map: {where} ({res["inliers"]:.0%} of the scan on '
+                            f'walls, {res["took_s"]:.1f} s). Check the lidar dots line up with the walls')
+            self.node.get_logger().info(f'find position: {res}')
+            return True, self.message
+        except Exception as exc:
+            self.message = f'could not find the position: {exc}'
+            return False, self.message
+        finally:
+            self.finding = False
 
     def update_pose(self):
         if not self.running():
@@ -305,6 +377,8 @@ class NavManager:
             'maps': self.maps(),
             'pose': self.pose,
             'pose_set': self.pose_set,
+            'finding': self.finding,
+            'found': self.found if self.running() and not self.slam_mode else None,
             'goal': self.goal,
             'goal_state': self.goal_state,
             'feedback': self.feedback,

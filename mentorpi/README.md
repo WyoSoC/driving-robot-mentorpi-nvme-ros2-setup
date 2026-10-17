@@ -113,7 +113,8 @@ Manual start without systemd (in this order):
 ├── maps/                    PER-CAR: SLAM maps saved from the web UI (not transferred)
 ├── tools/steer_test.sh      steering check (front wheels off the ground)
 ├── tests/run.sh             tests run in the container, nothing drives: test_fleet.py (cars avoiding
-│                            each other), test_merge.py (map merging), test_depth_sim.py (depth threat levels)
+│                            each other), test_merge.py (map merging), test_localize.py (finding the car on a map),
+│                            test_depth_sim.py (depth threat levels)
 ├── install.sh               installs/updates everything on a car (idempotent)
 ├── make_bundle.sh           packages kit + Docker image for transfer
 ├── system/                  udev rules + systemd unit templates
@@ -124,6 +125,7 @@ Manual start without systemd (in this order):
 │   ├── fleet.py             cars avoid each other: costmap marks + right of way
 │   ├── map_merge.py         line up two maps of the same place and merge them
 │   ├── team.py              mapping together: live maps lined up, frontiers split
+│   ├── localize.py          find the car on a saved map from one lidar scan
 │   ├── explore_manager.py   autonomous mapping (frontier exploration)
 │   ├── depth_obstacles.py   depth camera obstacles (/depth/scan) + comparison with the lidar
 │   ├── map_store.py         saved maps + content hash (same map on two cars?)
@@ -380,12 +382,23 @@ and are not transferred to other cars. The page shows the map rendered on the ca
 
 The Map panel's **Navigate** mode drives the car to a point on a saved map:
 1. Pick a map (saved in Mapping mode on this car), press **Start navigation** (~20 s).
-2. **📍 Set position**: click where the car is on the map, drag the way it faces, release.
+2. The car **finds its position by itself** once Nav2 is up: put it down anywhere on the mapped floor,
+   facing any way. `web_ui/localize.py` matches one lidar scan against the whole map (every free spot
+   and heading, then refined; ~2 s) and sets the result in AMCL. It only does so when it is sure: most
+   of the scan lies on walls of the map, few rays would pass through walls, and no clearly different
+   place fits almost as well (a symmetric room). Otherwise the best guess is drawn dashed and the
+   message says why. **🔎 Find position** runs it again (after moving the car by hand);
+   **📍 Set position** sets it by hand: click where the car is, drag the way it faces, release.
+   People, the other car or moved furniture don't stop it; a car in an unmapped spot gets "not sure".
 3. **🎯 Go to**: click the destination, drag the way the car should arrive, release. The green line is
    the plan; the red arrow is the car (lidar localization, AMCL).
 4. **Cancel goal**, the **E-STOP**, or touching the joystick stops it.
 
 Set up for this car (`nav/nav2_params.yaml`, started by `web_ui/nav_manager.py` via `nav/nav.launch.py`):
+Test: `tests/run.sh test_localize.py` (simulated scans from random spots on every saved map, with noise,
+missing points and a car-sized box that is not on the map: 60 of 60 found, none wrong). API:
+`POST /api/nav/find`.
+
 Hybrid-A* planner (only paths a car can drive: 0.40 m minimum turning radius, reverses when it must),
 Regulated Pure Pursuit (0.18 m/s, slower in tight curves and near obstacles), recoveries without
 turning on the spot (`nav/navigate_ackermann.xml`: clear costmaps, wait, back up 15 cm), a velocity
@@ -476,8 +489,12 @@ safe area.
 ### Mapping together (two cars explore at once)
 
 Tick **together** next to 🧭 Explore. Every other online car that is idle starts exploring too, and
-**Stop exploring** stops them all. Place the cars about 1 m apart, so their first maps overlap.
-`web_ui/team.py` does the rest:
+**Stop exploring** stops them all. The cars can start anywhere, facing any way, near each other or in
+different rooms. `web_ui/team.py` does the rest:
+
+- **Before their maps overlap** each car explores on its own; its lidar and depth camera see the other
+  car as an ordinary obstacle. Once the two maps share enough walls and floor, they line up (cars that
+  start in the same room: within a few seconds).
 
 - **Live maps lined up:** each car keeps its own SLAM map in its own frame. Every 10 s it fetches the
   other car's live map (`GET /api/slam/grid`) and lines it up with its own, the same way as Merge.

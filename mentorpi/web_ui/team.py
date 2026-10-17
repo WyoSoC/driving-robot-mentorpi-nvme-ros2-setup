@@ -17,8 +17,8 @@ car is in the costmap and the right-of-way rule works while exploring too.
 The alignment (~5 s for a full search, ~0.5 s to refine) runs in a separate low-priority process, so it
 never delays the web server's driving relay or sensors. A full search runs at most every FULL_EVERY_S.
 
-Start the two cars close together (side by side, ~1 m apart): their first maps then overlap and line up
-within a few seconds.
+The cars can start anywhere. Until their maps overlap each explores alone (the other car is an ordinary
+obstacle to lidar and camera); cars that start in the same room line up within a few seconds.
 """
 import base64
 import concurrent.futures

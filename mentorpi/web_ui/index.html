@@ -269,6 +269,7 @@
       <select id="navMap" title="Saved maps on this car and on the other cars (copied here when navigation starts)"></select>
       <button class="btn" id="navStart">Start navigation</button>
       <button class="btn" id="navStop">Stop</button>
+      <button class="btn" id="navFind" title="Find the car on the map from its lidar (done by itself when navigation starts)">🔎 Find position</button>
       <button class="btn" id="navSetPose" title="Click where the car is on the map, drag in the direction it faces">📍 Set position</button>
       <button class="btn" id="navGoTo" title="Click the destination, drag in the direction to arrive">🎯 Go to</button>
       <button class="btn" id="navCancel">Cancel goal</button>
@@ -292,7 +293,7 @@
         <option value="3">≤ 3 m</option><option value="5" selected>≤ 5 m</option><option value="8">≤ 8 m</option><option value="0">no limit</option>
       </select>
       <button class="btn" id="exploreStart" title="Map by itself: drive to the edges of the map until none are left, return, save">🧭 Explore</button>
-      <label class="slam-info" id="exploreTeamWrap" hidden title="Start (and stop) the other cars too: they map the same space together, splitting the unmapped edges. Place the cars ~1 m apart."><input type="checkbox" id="exploreTeam"> together</label>
+      <label class="slam-info" id="exploreTeamWrap" hidden title="Start (and stop) the other cars too: they map the same space together, splitting the unmapped edges. The cars can start anywhere."><input type="checkbox" id="exploreTeam"> together</label>
       <button class="btn" id="exploreStop">Stop exploring</button>
       <span class="slam-info" id="slamMsg"></span>
     </div>
@@ -1276,6 +1277,13 @@ function setTool(tool) {
   drawNav();
 }
 $('navSetPose').onclick = () => setTool('pose');
+$('navFind').onclick = async () => {
+  $('navFind').disabled = true; $('navMsg').textContent = 'looking for the car on the map…';
+  try {
+    const j = await (await fetch('/api/nav/find', { method: 'POST' })).json();
+    $('navMsg').textContent = j.message;
+  } catch { $('navMsg').textContent = 'no answer from the car'; }
+};
 $('navGoTo').onclick = () => setTool('go');
 async function navPoll() {
   let st;
@@ -1303,6 +1311,7 @@ async function navPoll() {
   const active = st.goal_state === 'active' || st.goal_state === 'sending' || yielding;
   $('navStart').disabled = st.running || !pick || (!pick.local && !pick.online) || (slam.st && slam.st.running);
   $('navStop').disabled = !st.running;
+  $('navFind').disabled = !st.running || st.slam_mode || st.finding || active;
   $('navSetPose').disabled = !st.running; $('navGoTo').disabled = !st.running || !st.pose_set;
   $('navCancel').disabled = !active;
   if (!st.running && nav.tool) setTool(null);
@@ -1310,14 +1319,14 @@ async function navPoll() {
     $('slamInfo').textContent = st.running
       ? 'Red arrow: the car (lidar localization). Green: planned path and goal. The car stops if the lidar sees ' +
         'something close; E-STOP or touching the joystick cancels the goal. Speed ≤ 0.2 m/s.'
-      : 'Drive with a map saved in Mapping mode (on this car or another one). Start navigation, set the car\'s ' +
-        'position, then pick a goal.';
+      : 'Drive with a map saved in Mapping mode (on this car or another one). Start navigation; the car finds ' +
+        'its position on the map from its lidar (or set it by hand), then pick a goal.';
     if (fleet.peers.length) $('slamInfo').textContent += ' Blue: other cars on the same map; this car plans ' +
       'around them, and stops while a driving car is in its way (jpi1 goes first when both are).';
     const fl = st.fleet || {};
     $('slamState').textContent = !st.running ? '' : yielding ? `waiting for ${fl.yield_to || 'another car'} to pass`
       : active ? 'driving to goal'
-      : st.pose_set ? `ready · ${st.map_name}` : `starting · ${st.map_name}`;
+      : st.pose_set ? `ready · ${st.map_name}` : st.finding ? 'finding its position…' : `starting · ${st.map_name}`;
     $('slamState').style.color = active ? 'var(--warn)' : st.running ? 'var(--ok)' : '';
     if (!nav.tool) {
       const fb = st.feedback || {};
@@ -1378,6 +1387,13 @@ function drawNav() {
     arrow(ctx, cx, cy, st.goal[2], 11, '#3fb950', true);
   }
   drawPeers(ctx, v);
+  if (st.found && st.found.pose && !st.found.sure && !st.pose_set) {   // best guess, not sure
+    const [cx, cy] = v.toC(st.found.pose[0], st.found.pose[1]);
+    ctx.save(); ctx.setLineDash([4, 3]); ctx.globalAlpha = 0.7;
+    arrow(ctx, cx, cy, st.found.pose[2], 10, '#f85149');
+    ctx.beginPath(); ctx.arc(cx, cy, 14, 0, 2 * Math.PI); ctx.strokeStyle = '#f85149'; ctx.stroke();
+    ctx.restore();
+  }
   if (st.pose && st.pose_set) {
     const [cx, cy] = v.toC(st.pose[0], st.pose[1]);
     arrow(ctx, cx, cy, st.pose[2], 10, '#f85149');

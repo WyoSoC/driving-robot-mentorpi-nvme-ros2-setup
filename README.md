@@ -14,7 +14,7 @@ height the car can hit, and of drops it can fall down.
 |---|---|---|
 | 1 | Each car drives, sees and is monitored from a browser (camera, lidar, depth, IMU, odometry, battery) | Done |
 | 2 | Each car maps a space by itself (frontier exploration; backs out of tight spots along its own trail) | Done, tested on both cars |
-| 3 | Navigate to a goal on any saved map, from either car | Done |
+| 3 | Navigate to a goal on any saved map, from either car; the car finds its own position on the map from its lidar | Done |
 | 4 | Cars know about each other: status exchanged at all times, maps synced between cars | Done |
 | 5 | Obstacles from lidar **and** depth camera; camera grades threat: rug = drivable, low hump = bump, else obstacle | Done, tested live |
 | 6 | Cars avoid each other: each car's planner treats the other car as an obstacle, and a right-of-way rule when they meet | Built and tested without driving; drive test with both cars next |

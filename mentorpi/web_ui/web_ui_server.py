@@ -14,7 +14,8 @@
   mentorpi-charging.path) stops / restarts the robot software. This server keeps running.
 - Navigation (nav_manager.py, Nav2 in nav/): GET /api/nav (status, pose, plan), GET /api/nav/map.png?name=,
   POST /api/nav/start?map=NAME | /api/nav/stop | /api/nav/pose?x=&y=&yaw= | /api/nav/go?x=&y=&yaw= |
-  /api/nav/cancel. Joystick input from the page cancels a navigation goal.
+  /api/nav/cancel | /api/nav/find (finds the car on the map from the lidar, localize.py; also runs by itself
+  once navigation is up). Joystick input from the page cancels a navigation goal.
 - SLAM (slam_manager.py): GET /api/slam (status, pose, path), GET /api/slam/map.png,
   POST /api/slam/start | /api/slam/stop | /api/slam/save?name=NAME
 - Exploration (explore_manager.py): POST /api/explore/start?radius=M (0 = no limit) | /api/explore/stop;
@@ -399,6 +400,8 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
                     ok, msg = nav.stop()
                 elif action == 'cancel':
                     ok, msg = nav.cancel()
+                elif action == 'find':
+                    ok, msg = nav.find_position()
                 elif action in ('pose', 'go'):
                     x, y, yaw = float(q['x']), float(q['y']), float(q.get('yaw', 0))
                     if not all(map(math.isfinite, (x, y, yaw))):
