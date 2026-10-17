@@ -16,6 +16,10 @@ commanded speed is the real speed and speed limits mean something. Fallback with
 motor_speed_factor (real / commanded, default 1.0). Speed and turn rate are scaled together, so the
 steering angle does not change.
 
+Third fix: the car steered ~25% less than commanded (car 2, IMU-measured circles). New parameter
+steer_gain multiplies the turn rate used for the steering servo only (rear-wheel speeds and
+odometry keep the commanded turn rate), so a commanded turn rate is the real one.
+
 Run by run_container.sh: python3 patch_odom.py [FILE]
 """
 import sys
@@ -52,13 +56,16 @@ replacements += [
     ("""        self.declare_parameter('angular_correction_factor', 1.00)""",
      """        self.declare_parameter('angular_correction_factor', 1.00)
         self.declare_parameter('motor_speed_factor', 1.00)  # mentorpi patch: real / commanded speed
-        self.declare_parameter('motor_speed_map', [0.0])     # mentorpi patch: [real, sent, ...]"""),
+        self.declare_parameter('motor_speed_map', [0.0])     # mentorpi patch: [real, sent, ...]
+        self.declare_parameter('steer_gain', 1.00)           # mentorpi patch: servo turn rate x gain"""),
     ("""        self.angular_factor = self.get_parameter('angular_correction_factor').value""",
      """        self.angular_factor = self.get_parameter('angular_correction_factor').value
         self.motor_factor = self.get_parameter('motor_speed_factor').value or 1.0
         m = list(self.get_parameter('motor_speed_map').value or [])
         self.motor_map = [(m[i], m[i + 1]) for i in range(0, len(m) - 1, 2)] if len(m) >= 4 else []
-        self.get_logger().info(f'motor_speed_factor {self.motor_factor}, motor_speed_map {self.motor_map} (mentorpi patch)')"""),
+        self.steer_gain = self.get_parameter('steer_gain').value or 1.0
+        self.get_logger().info(f'motor_speed_factor {self.motor_factor}, motor_speed_map {self.motor_map}, '
+                               f'steer_gain {self.steer_gain} (mentorpi patch)')"""),
     ("""    def cmd_vel_callback(self, msg):""",
      """    def motor_scale(self, v):
         # mentorpi patch: sent / wanted speed ratio for a wanted real speed v
@@ -78,11 +85,14 @@ replacements += [
     def cmd_vel_callback(self, msg):"""),
     ("""\n            speeds = self.ackermann.set_velocity(self.linear_x, self.angular_z)""",
      """\n            k = self.motor_scale(self.linear_x)
-            speeds = self.ackermann.set_velocity(self.linear_x * k, self.angular_z * k)"""),
+            speeds = self.ackermann.set_velocity(self.linear_x * k, self.angular_z * k)
+            if self.steer_gain != 1.0 and speeds[0] is not None:   # stronger servo command only
+                servo = self.ackermann.set_velocity(self.linear_x * k, self.angular_z * k * self.steer_gain)[0]
+                speeds = (servo, speeds[1])"""),
 ]
 for old, new in replacements:
     if src.count(old) != 1:
         sys.exit(f"patch_odom: factory code changed, cannot apply patch:\n{old}")
     src = src.replace(old, new)
 open(FILE, "w").write(src)
-print("odom_publisher patched: correction factors on /odom_raw velocities, motor speed map on motor commands")
+print("odom_publisher patched: correction factors on /odom_raw velocities, motor speed map + steer gain on commands")

@@ -7,7 +7,8 @@ and how much the car really moved:
 
   linear   drive straight toward a flat wall: lidar distance change vs /odom_raw distance,
            forward then back again (2 samples)
-  angular  drive a left and a right circle: IMU yaw change vs /odom_raw yaw change
+  angular  drive a left and a right circle: gyro yaw change vs /odom_raw yaw change -> steer_gain
+           (servo command x gain, so the commanded turn rate is the real one; odometry factor 1.0)
   speedmap drive back and forth toward a flat wall at several motor speeds; the lidar measures the
            real speed of each (the motors have no speed feedback and respond non-linearly)
   steer    drive straight toward a flat wall and back at 0.1 m/s: IMU heading change per metre ->
@@ -38,6 +39,7 @@ MODE = sys.argv[1]
 CUR_LIN, CUR_ANG = float(sys.argv[2]), float(sys.argv[3])
 CUR_MOTOR = float(sys.argv[4]) if len(sys.argv) > 4 else 1.0
 CUR_TRIM = int(float(sys.argv[5])) if len(sys.argv) > 5 else 0   # steering servo offset, us
+CUR_GAIN = float(sys.argv[6]) if len(sys.argv) > 6 else 1.0      # steer_gain
 WHEELBASE = 0.145           # m, controller/ackermann.py
 SPEED = 0.2                 # m/s
 STEER = 0.5                 # rad/s commanded turn rate for the circles (0.4 m radius as commanded;
@@ -438,7 +440,11 @@ class Calib:
         if abs(ratios[0] - ratios[1]) > 0.1:
             print(f'  NOTE: left/right differ ({ratios[0]:.3f} vs {ratios[1]:.3f}); '
                   'the steering may not be centred', flush=True)
-        print(f'RESULT angular_correction_factor={CUR_ANG * r:.4f}  (current {CUR_ANG}, measured ratio {r:.4f})')
+        q = r * CUR_ANG                      # real turn rate / commanded turn rate
+        print(f'  real turn rate = {q:.3f} x commanded (steer_gain {CUR_GAIN}, odometry factor {CUR_ANG})', flush=True)
+        if abs(q - 1) < 0.03:
+            print('  steering strength is good (within 3%)', flush=True)
+        print(f'RESULT steer_gain={CUR_GAIN / q:.4f}  (current {CUR_GAIN}; sets angular_correction_factor 1.0)')
 
     def check(self):
         f, b, near = (self.averaged(lambda: self.sector(0)), self.averaged(lambda: self.guard(-1)),

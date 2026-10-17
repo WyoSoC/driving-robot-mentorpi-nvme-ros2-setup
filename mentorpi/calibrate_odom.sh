@@ -9,7 +9,8 @@
 #                               it only verifies (ratio should be ~1.00), else -> motor_speed_factor
 #   calibrate_odom.sh steer     straight toward the wall and back twice at 0.1 m/s -> steering centre
 #                               trim (calibration/servo_config.yaml, key 3 = steering, us)
-#   calibrate_odom.sh angular   one left and one right circle (~0.8 m wide) -> angular_correction_factor
+#   calibrate_odom.sh angular   one left and one right circle (~1.1 m wide) -> steer_gain (steering
+#                               servo strength; odometry angular_correction_factor reset to 1.0)
 #   add --yes to skip the questions (start + save), e.g. when someone at the car confirmed
 #
 # Results go to calibration/calibrate_params.yaml (old file kept as .bak-<date>) and bringup is
@@ -21,16 +22,16 @@ DIR=$(cd "$(dirname "$0")" && pwd)
 PARAMS="$DIR/calibration/calibrate_params.yaml"
 MODE=${1:-}
 YES=0; [ "${2:-}" = "--yes" ] && YES=1
-case "$MODE" in check|speedmap|steer|linear|angular) ;; *) sed -n 2,16p "$0"; exit 1 ;; esac
+case "$MODE" in check|speedmap|steer|linear|angular) ;; *) sed -n 2,17p "$0"; exit 1 ;; esac
 
 docker ps --format '{{.Names}}' | grep -q '^MentorPi$' || { echo "MentorPi container not running" >&2; exit 1; }
 cur() { v=$(grep -E "^\s*$1:" "$PARAMS" | sed -E 's/^[^:]*:\s*//'); echo "${v:-$2}"; }
 LIN=$(cur linear_correction_factor 1.0); ANG=$(cur angular_correction_factor 1.0)
-MOT=$(cur motor_speed_factor 1.0); MAP=$(cur motor_speed_map "")
+MOT=$(cur motor_speed_factor 1.0); MAP=$(cur motor_speed_map ""); GAIN=$(cur steer_gain 1.0)
 SERVO="$DIR/calibration/servo_config.yaml"
 [ -f "$SERVO" ] || cp "$DIR/calibration.defaults/servo_config.yaml" "$SERVO"
 TRIM=$(grep -E '^3:' "$SERVO" | sed -E 's/^3:\s*//'); TRIM=${TRIM:-0}
-echo "Current: motor_speed_map ${MAP:-none}, motor_speed_factor $MOT, linear $LIN, angular $ANG, steering trim $TRIM us"
+echo "Current: motor_speed_map ${MAP:-none}, motor_speed_factor $MOT, linear $LIN, angular $ANG, steer_gain $GAIN, steering trim $TRIM us"
 
 # rewrite in place (same inode): the file is bind-mounted into the container, sed -i would replace it
 setparam() {  # setparam KEY VALUE   (VALUE "" removes the key)
@@ -98,7 +99,7 @@ if [ "$MODE" = speedmap ]; then
 fi
 
 OUT=$(mktemp)
-if ! docker exec -i -u ubuntu MentorPi /bin/zsh -c "source ~/.zshrc >/dev/null 2>&1; exec python3 -u - $MODE $LIN $ANG $MOT $TRIM" \
+if ! docker exec -i -u ubuntu MentorPi /bin/zsh -c "source ~/.zshrc >/dev/null 2>&1; exec python3 -u - $MODE $LIN $ANG $MOT $TRIM $GAIN" \
     < "$DIR/tools/odom_calib.py" | tee "$OUT" || ! grep -q . "$OUT"; then
     echo "Calibration did not complete." >&2
 fi
@@ -122,7 +123,7 @@ if [ "$key" = steer_trim_us ]; then
 elif [ "$key" = motor_speed_map ]; then
     val="[$val]"
 else
-    lo=0.7; hi=1.3; [ "$key" = motor_speed_factor ] && { lo=0.3; hi=3.0; }
+    lo=0.7; hi=1.3; [ "$key" = motor_speed_factor ] && { lo=0.3; hi=3.0; }; [ "$key" = steer_gain ] && { lo=0.7; hi=1.6; }
     python3 -c "import sys; v,lo,hi=map(float,sys.argv[1:]); sys.exit(0 if lo <= v <= hi else 1)" "$val" $lo $hi \
         || { echo "New $key=$val is outside $lo-$hi, looks wrong; nothing changed." >&2; exit 1; }
 fi
@@ -151,5 +152,6 @@ fi
 [ "$MODE" = speedmap ] || cp "$PARAMS" "$BACKUP"
 setparam "$key" "$val"
 [ "$key" = motor_speed_map ] && setparam linear_correction_factor 1.0
+[ "$key" = steer_gain ] && setparam angular_correction_factor 1.0
 echo "Saved $key=$val in $PARAMS (previous: $BACKUP)"
 restart_bringup
