@@ -40,6 +40,7 @@ STEER = math.radians(20)    # circle steering angle (radius ~0.4 m)
 WALL_MIN, WALL_MAX = 1.0, 4.0
 STOP_FRONT = 0.45           # m, abort if the front gets this close
 STOP_NEAR = 0.25            # m, abort during circles if anything is this close
+STOP_BACK = 0.45            # m, abort when reversing if anything behind is this close (lidar to obstacle)
 
 
 def wrap(a):
@@ -90,6 +91,19 @@ class Calib:
              if abs(wrap(m.angle_min + i * m.angle_increment - c)) <= math.radians(width_deg)
              and m.range_min < r < m.range_max and math.isfinite(r)]
         return statistics.median(v) if len(v) >= 2 else None
+
+    def guard(self, direction, width_deg=35.0):
+        """Nearest obstacle (2nd-closest point, so one stray return is ignored) in a wide wedge ahead
+        (direction > 0) or behind (< 0). Not a median: a chair leg is only 1-2 points of a sector."""
+        with self.lock:
+            m = self.scan
+        if m is None:
+            return None
+        c = 0.0 if direction > 0 else math.pi
+        v = sorted(r for i, r in enumerate(m.ranges)
+                   if abs(wrap(m.angle_min + i * m.angle_increment - c)) <= math.radians(width_deg)
+                   and m.range_min < r < m.range_max and math.isfinite(r))
+        return v[1] if len(v) >= 2 else None
 
     def nearest(self):
         with self.lock:
@@ -146,8 +160,8 @@ class Calib:
             ahead = self.sector(0)   # also stop on the real (lidar) distance: an uncalibrated car
             if ahead is not None and abs(d0 - ahead) >= travel:   # can drive much further than odometry says
                 break
-            front = self.sector(0, 15) if direction > 0 else self.sector(180, 15)
-            if front is not None and front < (STOP_FRONT if direction > 0 else 0.4):
+            front = self.guard(direction)
+            if front is not None and front < (STOP_FRONT if direction > 0 else STOP_BACK):
                 self.stop()
                 sys.exit(f'stopped: obstacle {front:.2f} m {"ahead" if direction > 0 else "behind"}')
             if time.time() > end:
@@ -190,8 +204,9 @@ class Calib:
         st = m.header.stamp.sec + m.header.stamp.nanosec * 1e-9
         return st, self.sector(0)
 
-    def run_at(self, sent, direction, dist=0.7):
-        """Drive at motor speed `sent` (m/s as the factory code understands it). Return the real
+    def run_at(self, sent, direction, target):
+        """Drive at motor speed `sent` (m/s as the factory code understands it) until the wall ahead is
+        at `target` m (absolute, so passes don't add up and walk the car away). Return the real
         steady speed in m/s (lidar range rate after the first second), 0 if it barely moved."""
         d0 = self.averaged(lambda: self.sector(0), 1.0)
         if d0 is None:
@@ -203,10 +218,10 @@ class Calib:
             if f and f[1] is not None and f[0] not in seen:
                 seen.add(f[0])
                 samples.append((f[0], f[1]))
-                if abs(f[1] - d0) >= dist:
+                if (f[1] <= target) if direction > 0 else (f[1] >= target):
                     break
-            guard = self.sector(0, 15) if direction > 0 else self.sector(180, 15)
-            if guard is not None and guard < (STOP_FRONT if direction > 0 else 0.4):
+            guard = self.guard(direction)
+            if guard is not None and guard < (STOP_FRONT if direction > 0 else STOP_BACK):
                 self.stop()
                 sys.exit(f'stopped: obstacle {guard:.2f} m {"ahead" if direction > 0 else "behind"}')
             if len(samples) >= 6 and samples[-1][0] - samples[-6][0] >= 0.35:   # runaway: much faster than sent
@@ -243,21 +258,22 @@ class Calib:
         """After a runaway pass, slowly return toward the start distance."""
         ahead = self.averaged(lambda: self.sector(0), 0.5)
         if ahead is not None and ahead < 1.5:
-            behind = self.sector(180, 15)
+            behind = self.guard(-1)
             if behind is None or behind > 1.0:
-                self.run_at(0.07, -1, dist=min(0.7, 1.5 - ahead))
+                self.run_at(0.07, -1, 1.5)
 
     def speedmap(self):
         d = self.averaged(lambda: self.sector(0))
         if d is None or not 1.6 <= d <= WALL_MAX:
             sys.exit(f'need a flat wall straight ahead 1.6-{WALL_MAX} m away (lidar sees {d})')
+        home = d
+        behind = self.guard(-1)
+        if behind is not None and behind < 1.0:
+            sys.exit(f'something is {behind:.2f} m behind the car; needs ~1.3 m free behind')
         pts = []
         for sent in (0.05, 0.07, 0.09, 0.11, 0.13, 0.16, 0.20):
-            ahead = self.averaged(lambda: self.sector(0), 0.5)
-            if ahead is not None and ahead - 0.7 < STOP_FRONT + 0.15:
-                sys.exit(f'wall too close ({ahead:.2f} m) to continue')
             try:
-                v = (self.run_at(sent, +1) + self.run_at(sent, -1)) / 2
+                v = (self.run_at(sent, +1, home - 0.7) + self.run_at(sent, -1, home)) / 2
             except Runaway:
                 print(f'  sent {sent:.3f} m/s -> RUNAWAY: the motor speed control loses control here; '
                       'map ends below this speed', flush=True)
@@ -310,7 +326,7 @@ class Calib:
         print(f'RESULT angular_correction_factor={CUR_ANG * r:.4f}  (current {CUR_ANG}, measured ratio {r:.4f})')
 
     def check(self):
-        f, b, near = (self.averaged(lambda: self.sector(0)), self.averaged(lambda: self.sector(180)),
+        f, b, near = (self.averaged(lambda: self.sector(0)), self.averaged(lambda: self.guard(-1)),
                       self.averaged(self.nearest, 1.0))
         fmt = lambda v: f'{v:.2f} m' if v is not None else 'nothing'
         print(f'  ahead {fmt(f)}, behind {fmt(b)}, nearest {fmt(near)}')
