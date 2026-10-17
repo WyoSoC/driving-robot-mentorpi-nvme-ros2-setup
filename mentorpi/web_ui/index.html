@@ -56,8 +56,8 @@
     box-shadow: 0 0 0 3px rgba(248,81,73,.25); }
   .estop.engaged { background: var(--warn); color: #111; box-shadow: 0 0 0 3px rgba(210,153,34,.35); }
 
-  /* Three equal columns, each a stack:  Camera | Drive | Odometry
-                                         Lidar  | IMU   | Map
+  /* Three equal columns, each a stack:  Camera | Drive    | IMU
+                                         Lidar  | Odometry | Map
      System full width below. Narrow: columns dissolve, panels stack in priority order. */
   main { display: grid; gap: 10px; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: start; }
   .col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }   /* panels stack, no row gaps */
@@ -225,6 +225,21 @@
     <div class="hint">Drag the pad, or use <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / arrow keys.
       <kbd>Space</kbd> = E-stop. The car stops if this page loses connection.</div>
   </section>
+  <section class="panel" id="odomPanel">
+    <h2>Odometry <span class="right"><button class="btn" id="trailReset" style="padding:2px 8px;font-size:12px">Clear trail</button></span></h2>
+    <canvas id="trail"></canvas>
+    <div class="readout">
+      <div><div class="k">X</div><div class="v" id="oX">--</div></div>
+      <div><div class="k">Y</div><div class="v" id="oY">--</div></div>
+      <div><div class="k">Heading</div><div class="v" id="oYaw">--</div></div>
+      <div><div class="k">Speed</div><div class="v" id="oV">--</div></div>
+      <div><div class="k">Turn rate</div><div class="v" id="oW">--</div></div>
+      <div><div class="k">Distance</div><div class="v" id="oDist">0.00 m</div></div>
+    </div>
+  </section>
+  </div>
+
+  <div class="col">
   <section class="panel" id="imuPanel">
     <h2>IMU</h2>
     <canvas id="attitude"></canvas>
@@ -236,21 +251,6 @@
       <div><div class="k">Accel x</div><div class="v" id="iAx">--</div></div>
       <div><div class="k">Accel y</div><div class="v" id="iAy">--</div></div>
       <div><div class="k">Accel z</div><div class="v" id="iAz">--</div></div>
-    </div>
-  </section>
-  </div>
-
-  <div class="col">
-  <section class="panel" id="odomPanel">
-    <h2>Odometry <span class="right"><button class="btn" id="trailReset" style="padding:2px 8px;font-size:12px">Clear trail</button></span></h2>
-    <canvas id="trail"></canvas>
-    <div class="readout">
-      <div><div class="k">X</div><div class="v" id="oX">--</div></div>
-      <div><div class="k">Y</div><div class="v" id="oY">--</div></div>
-      <div><div class="k">Heading</div><div class="v" id="oYaw">--</div></div>
-      <div><div class="k">Speed</div><div class="v" id="oV">--</div></div>
-      <div><div class="k">Turn rate</div><div class="v" id="oW">--</div></div>
-      <div><div class="k">Distance</div><div class="v" id="oDist">0.00 m</div></div>
     </div>
   </section>
   <section class="panel" id="mapPanel">
