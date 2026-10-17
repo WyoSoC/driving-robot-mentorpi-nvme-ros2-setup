@@ -184,7 +184,7 @@
     <div class="readout">
       <div><div class="k">Roll</div><div class="v" id="iRoll">--</div></div>
       <div><div class="k">Pitch</div><div class="v" id="iPitch">--</div></div>
-      <div><div class="k">Yaw</div><div class="v" id="iYaw">--</div></div>
+      <div><div class="k" title="From the EKF (/odom): gyro turn rate, frozen while parked">Heading</div><div class="v" id="iYaw">--</div></div>
       <div><div class="k">Gyro z</div><div class="v" id="iGz">--</div></div>
       <div><div class="k">Accel x</div><div class="v" id="iAx">--</div></div>
       <div><div class="k">Accel y</div><div class="v" id="iAy">--</div></div>
@@ -582,26 +582,30 @@ function drawLidar() {
 }
 
 // ---------- IMU ----------
-let rpy = null;
+// Roll / pitch / acceleration: imu_complementary_filter (/imu, /imu/rpy/filtered), fine for tilt.
+// Heading and turn rate: NOT from that filter (it swallows slow turns, see system/patch_ekf.py):
+// heading = EKF (/odom, set in the odometry handler), turn rate = gyro with start-up bias removed.
+let rpy = null, ekfYaw = null;
 ros.subscribe('/imu/rpy/filtered', 'geometry_msgs/msg/Vector3Stamped', msg => {
   rpy = msg.vector;
   $('iRoll').textContent = deg(rpy.x).toFixed(1) + '°';
   $('iPitch').textContent = deg(rpy.y).toFixed(1) + '°';
-  $('iYaw').textContent = deg(rpy.z).toFixed(1) + '°';
   drawAttitude();
 }, 100);
 ros.subscribe('/imu', 'sensor_msgs/msg/Imu', msg => {
-  const a = msg.linear_acceleration, g = msg.angular_velocity;
+  const a = msg.linear_acceleration;
   $('iAx').textContent = fmt(a.x) + ' m/s²';
   $('iAy').textContent = fmt(a.y) + ' m/s²';
   $('iAz').textContent = fmt(a.z) + ' m/s²';
-  $('iGz').textContent = deg(g.z).toFixed(1) + '°/s';
   touch('imu', `${fmt(Math.hypot(a.x, a.y, a.z), 1)} m/s²`);
+}, 100);
+ros.subscribe('/imu_corrected', 'sensor_msgs/msg/Imu', msg => {
+  $('iGz').textContent = deg(msg.angular_velocity.z).toFixed(1) + '°/s';
 }, 100);
 
 function drawAttitude() {
   const { ctx, w, h } = prepCanvas($('attitude'));
-  const roll = rpy ? rpy.x : 0, pitch = rpy ? rpy.y : 0, yaw = rpy ? rpy.z : 0;
+  const roll = rpy ? rpy.x : 0, pitch = rpy ? rpy.y : 0, yaw = ekfYaw ?? 0;
   // Artificial horizon (left half)
   const r = Math.min(w / 2, h) / 2 - 8, cx = w / 4, cy = h / 2;
   ctx.save();
@@ -620,7 +624,7 @@ function drawAttitude() {
   ctx.strokeStyle = '#2a323d'; ctx.lineWidth = 1;
   ctx.beginPath(); ctx.arc(cx, cy, r, 0, 2 * Math.PI); ctx.stroke();
 
-  // Compass (right half), car heading = yaw (CCW positive), up = yaw 0
+  // Compass (right half), car heading = EKF yaw (CCW positive), up = yaw 0
   const kx = w * 3 / 4;
   ctx.beginPath(); ctx.arc(kx, cy, r, 0, 2 * Math.PI); ctx.fillStyle = '#0f141a'; ctx.fill(); ctx.stroke();
   ctx.fillStyle = '#5b6573'; ctx.font = '10px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
@@ -652,6 +656,11 @@ ros.subscribe('/odom', 'nav_msgs/msg/Odometry', msg => {
   $('oX').textContent = fmt(p.x) + ' m';
   $('oY').textContent = fmt(p.y) + ' m';
   $('oYaw').textContent = deg(yaw).toFixed(1) + '°';
+  if (ekfYaw === null || Math.abs(yaw - ekfYaw) > 0.002) {   // IMU panel heading + compass
+    ekfYaw = yaw;
+    $('iYaw').textContent = deg(yaw).toFixed(1) + '°';
+    if (!rpy) drawAttitude();
+  }
   $('oV').textContent = fmt(v) + ' m/s';
   $('oW').textContent = deg(wz).toFixed(1) + '°/s';
   $('oDist').textContent = odomDist.toFixed(2) + ' m';
