@@ -17,6 +17,23 @@ for d in /dev/rrc /dev/ldlidar; do
 done
 lsusb -d 3482:6723 >/dev/null && echo "  depth camera present" || echo "  depth camera MISSING"
 
+echo; echo "-- calibration (this car only: calibration/, not in git)"
+C="$DIR/calibration"
+if [ -f "$C/imu_calib.yaml" ]; then
+    cmp -s "$C/imu_calib.yaml" "$DIR/calibration.defaults/imu_calib.yaml" && echo "  IMU: factory defaults" \
+        || echo "  IMU: calibrated ($(date -r "$C/imu_calib.yaml" +%F))"
+else echo "  IMU: MISSING"; fi
+val() { grep -E "^\s*$1:" "$C/calibrate_params.yaml" 2>/dev/null | sed -E 's/^[^:]*:\s*//'; }
+m=$(val motor_speed_map); n=$(echo "$m" | tr -cd ',' | wc -c)
+if [ -n "$m" ]; then
+    echo "  speed map: $(( (n + 1) / 2 )) points, up to $(echo "$m" | tr -d '[]' | awk -F, '{print $(NF-1)}') m/s real"
+else
+    echo "  speed map: none (motor_speed_factor $(val motor_speed_factor | grep . || echo 1.0))"
+fi
+g=$(val steer_gain); tr_=$(grep -E '^3:' "$C/servo_config.yaml" 2>/dev/null | sed -E 's/^3:\s*//')
+echo "  steering: port ${STEER_SERVO_PORT:-4}, centre trim ${tr_:-0} us, gain ${g:-1.0}"
+echo "  odometry factors: linear $(val linear_correction_factor), angular $(val angular_correction_factor)"
+
 echo; echo "-- container"
 if ! docker ps --format '{{.Names}}' | grep -q '^MentorPi$'; then
     echo "  MentorPi container not running"; exit 1
