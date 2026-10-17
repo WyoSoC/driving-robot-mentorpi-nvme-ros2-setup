@@ -276,6 +276,24 @@ and are not transferred to other cars. The page shows the map rendered on the ca
 
 ## Transfer to another identical car
 
+
+### Navigation (Nav2)
+
+The Map panel's **Navigate** mode drives the car to a point on a saved map:
+1. Pick a map (saved in Mapping mode on this car), press **Start navigation** (~20 s).
+2. **📍 Set position**: click where the car is on the map, drag the way it faces, release.
+3. **🎯 Go to**: click the destination, drag the way the car should arrive, release. The green line is
+   the plan; the red arrow is the car (lidar localization, AMCL).
+4. **Cancel goal**, the **E-STOP**, or touching the joystick stops it.
+
+Set up for this car (`nav/nav2_params.yaml`, started by `web_ui/nav_manager.py` via `nav/nav.launch.py`):
+Hybrid-A* planner (only paths a car can drive: 0.40 m minimum turning radius, reverses when it must),
+Regulated Pure Pursuit (0.18 m/s, slower in tight curves and near obstacles), recoveries without
+turning on the spot (`nav/navigate_ackermann.xml`: clear costmaps, wait, back up 15 cm), a velocity
+smoother and a lidar collision monitor (stops for anything within a few cm of the body, slows so it
+never reaches an obstacle within 1.2 s). The web server is the gate: Nav2's output reaches `/cmd_vel`
+only while a goal is active, and `/cmd_vel` itself is clamped to 0.2 m/s and 0.5 rad/s by
+`odom_publisher`. Mapping and navigation cannot run at the same time.
 ### What you need
 - The target car: Raspberry Pi 5 MentorPi M1 (Ackermann), with the same USB devices
   (STM32 controller `1a86:55d4`, MS200 lidar `1a86:7523`, HP60C camera `3482:6723`).
