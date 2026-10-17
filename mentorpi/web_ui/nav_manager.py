@@ -27,6 +27,7 @@ import map_store
 
 MAPS_DIR = map_store.MAPS_DIR
 LAUNCH = ['ros2', 'launch', '/home/ubuntu/nav/nav.launch.py']
+NAV_LOG = '/tmp/nav.log'   # Nav2's output (inside the container), overwritten at every start
 NAME_RE = map_store.NAME_RE
 CMD_FRESH_S = 0.5          # Nav2 command older than this -> stop
 PLAN_STEP = 0.05           # m between plan points sent to the page
@@ -89,7 +90,7 @@ class NavManager:
                 return False, 'stop mapping first'
             self.proc = subprocess.Popen(LAUNCH + [f'map:={os.path.join(MAPS_DIR, name + ".yaml")}'],
                                          start_new_session=True,
-                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                         stdout=open(NAV_LOG, 'w'), stderr=subprocess.STDOUT)
             self.map_name, self.started_at, self.slam_mode = name, time.time(), False
             self.goal, self.goal_state, self.plan, self.pose, self.pose_set = None, 'idle', [], None, False
             self.message = f'navigation starting on "{name}" (~20 s); then set the car\'s position on the map'
@@ -104,7 +105,7 @@ class NavManager:
             if not self.slam.running():
                 return False, 'start mapping first'
             self.proc = subprocess.Popen(LAUNCH + ['slam:=true'], start_new_session=True,
-                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                         stdout=open(NAV_LOG, 'w'), stderr=subprocess.STDOUT)
             self.map_name, self.started_at, self.slam_mode = None, time.time(), True
             self.goal, self.goal_state, self.plan, self.pose, self.pose_set = None, 'idle', [], None, True
             self.message = 'navigation starting on the live map'
