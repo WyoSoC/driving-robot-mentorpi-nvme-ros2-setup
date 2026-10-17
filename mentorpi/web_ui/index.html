@@ -19,7 +19,26 @@
     --bad: #f85149;
     --radius: 12px;
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --canvas: #0a0e13;       /* drawing surfaces (lidar, odometry, log) */
+    --grid: #1f2833;
+    --grid-2: #1a212b;
+    --dim: #5b6573;          /* labels on drawings */
+    --dial: #0f141a;
+    --overlay: rgba(13,17,23,.75);
+    --map-free: #2c3846;     /* map: floor, unexplored, walls */
+    --map-unknown: #10151b;
+    --map-occ: #d6dde5;
     color-scheme: dark;
+  }
+  /* Light theme: the 🌙/☀️ button in the header, else the system setting. */
+  :root[data-theme="light"] {
+    --bg: #f6f8fa; --panel: #ffffff; --panel-2: #eef1f4; --line: #d0d7de;
+    --text: #1f2328; --muted: #59636e; --accent: #0a7cc4; --ok: #1a7f37; --warn: #9a6700;
+    --peer: #0969da; --bad: #cf222e;
+    --canvas: #f3f5f7; --grid: #dde3e9; --grid-2: #e6eaee; --dim: #6e7781; --dial: #ffffff;
+    --overlay: rgba(255,255,255,.85);
+    --map-free: #ffffff; --map-unknown: #d3d9df; --map-occ: #1f2328;
+    color-scheme: light;
   }
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
@@ -62,7 +81,8 @@
   main { display: grid; gap: 10px; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: start; }
   .col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }   /* panels stack, no row gaps */
   #systemPanel { grid-column: 1 / -1; }
-  #slamMap { aspect-ratio: 4 / 3; background: #cdcdcd; }
+  #slamMap { aspect-ratio: 4 / 3; background: var(--map-unknown); }
+  #slamState:empty { display: none; }   /* status badge only while mapping / exploring / navigating */
   .slam-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 6px; }
   .slam-bar input { background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
     border-radius: 8px; padding: 4px 8px; width: 10em; max-width: 100%; }
@@ -71,6 +91,8 @@
     border-radius: 8px; padding: 4px 6px; font: inherit; font-size: 12px; }
   .slam-bar[hidden] { display: none; }
   .btn.tool-on { background: var(--accent); color: #111; border-color: var(--accent); }
+  :root[data-theme="light"] #chargeBtn.on, :root[data-theme="light"] .btn.tool-on,
+  :root[data-theme="light"] .estop.engaged { color: #fff; }   /* dark accents in light theme */
   #slamMap.picking { cursor: crosshair; touch-action: none; }
   @media (max-width: 900px) {
     main { display: flex; flex-direction: column; align-items: stretch; }
@@ -102,7 +124,7 @@
 
   /* Drive */
   .pad { position: relative; width: min(100%, 170px); aspect-ratio: 1; margin: 2px auto 6px;
-    border-radius: 50%; background: radial-gradient(circle, var(--panel-2) 0 60%, #11161d 100%);
+    border-radius: 50%; background: radial-gradient(circle, var(--panel-2) 0 60%, var(--line) 100%);
     border: 1px solid var(--line); touch-action: none; user-select: none; -webkit-user-select: none; cursor: grab; }
   .pad::before, .pad::after { content: ""; position: absolute; background: var(--line); }
   .pad::before { left: 50%; top: 10%; bottom: 10%; width: 1px; }
@@ -131,7 +153,7 @@
   .bar i { position: absolute; top: 0; bottom: 0; background: var(--accent); }
 
   /* Canvases */
-  canvas { width: 100%; display: block; background: #0a0e13; border-radius: 8px; }
+  canvas { width: 100%; display: block; background: var(--canvas); border-radius: 8px; }
   #lidar { aspect-ratio: 4 / 3; }
   #attitude { aspect-ratio: 5 / 2; }
   #trail { aspect-ratio: 2 / 1; }
@@ -150,7 +172,7 @@
   .sys .item .v { margin-left: auto; font-family: var(--mono); color: var(--muted); font-size: 12px;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
   #log { margin-top: 6px; font-family: var(--mono); font-size: 11px; color: var(--muted); max-height: 72px;
-    overflow: auto; background: #0a0e13; border-radius: 6px; padding: 4px 8px; }
+    overflow: auto; background: var(--canvas); border-radius: 6px; padding: 4px 8px; }
   #log div { white-space: pre-wrap; }
 </style>
 </head>
@@ -163,6 +185,7 @@
   <button class="btn" id="chargeBtn" aria-pressed="false">⚡ Charging mode: off</button>
   <span id="peerPills" style="display:contents"></span>
   <span class="spacer"></span>
+  <button class="btn" id="themeBtn" title="Light / dark theme">🌙</button>
   <button class="estop" id="estop" title="Emergency stop (Space)">E-STOP</button>
 </header>
 
@@ -255,7 +278,7 @@
   </section>
   <section class="panel" id="mapPanel">
     <h2>Map <span class="right"><span class="tabs" id="mapTabs"><button data-mode="slam" class="active">Mapping</button><button data-mode="nav">Navigate</button></span>
-      <span class="pill" id="slamState">off</span></span></h2>
+      <span class="pill" id="slamState"></span></span></h2>
     <div class="slam-bar" id="navBar" hidden>
       <select id="navMap" title="Saved maps on this car and on the other cars (copied here when navigation starts)"></select>
       <button class="btn" id="navStart">Start navigation</button>
@@ -318,6 +341,61 @@ function log(msg) {
 
 function storageGet(key) { try { return localStorage.getItem(key); } catch { return null; } }
 function storageSet(key, val) { try { localStorage.setItem(key, val); } catch { /* ignore */ } }
+
+// ---------- Theme (dark / light) ----------
+// Drawing code reads its colours from C (the CSS variables of the current theme).
+const C = { version: 0 };
+const THEME_VARS = ['text', 'muted', 'line', 'canvas', 'grid', 'grid-2', 'dim', 'dial', 'overlay',
+                    'map-free', 'map-unknown', 'map-occ'];
+function readTheme() {
+  const cs = getComputedStyle(document.documentElement);
+  THEME_VARS.forEach(k => { C[k] = cs.getPropertyValue('--' + k).trim(); });
+  C.version++;
+}
+function applyTheme(t) {
+  document.documentElement.dataset.theme = t;
+  $('themeBtn').textContent = t === 'light' ? '🌙' : '☀️';
+  $('themeBtn').title = t === 'light' ? 'Switch to the dark theme' : 'Switch to the light theme';
+  readTheme();
+}
+applyTheme(storageGet('theme') ||
+           (window.matchMedia && matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'));
+$('themeBtn').addEventListener('click', () => {
+  const t = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+  storageSet('theme', t);
+  applyTheme(t);
+  drawSlam();            // the map redraws only on new data otherwise
+});
+// Map images (server PNG: 255 free, 205 unknown, 0 wall, greys between) in the theme's map colours.
+const mapTint = new WeakMap();
+function hexRgb(h) {
+  h = h.replace('#', '');
+  if (h.length === 3) h = h.split('').map(c => c + c).join('');
+  const n = parseInt(h, 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+function themedMap(img) {
+  const hit = mapTint.get(img);
+  if (hit && hit.v === C.version) return hit.c;
+  const c = document.createElement('canvas');
+  c.width = img.width; c.height = img.height;
+  const x = c.getContext('2d');
+  x.drawImage(img, 0, 0);
+  const d = x.getImageData(0, 0, c.width, c.height), px = d.data;
+  const F = hexRgb(C['map-free']), U = hexRgb(C['map-unknown']), O = hexRgb(C['map-occ']);
+  for (let i = 0; i < px.length; i += 4) {
+    const g = px[i];
+    if (g === 205) { px[i] = U[0]; px[i + 1] = U[1]; px[i + 2] = U[2]; }
+    else {
+      const t = (255 - g) / 255;
+      px[i] = F[0] + (O[0] - F[0]) * t; px[i + 1] = F[1] + (O[1] - F[1]) * t; px[i + 2] = F[2] + (O[2] - F[2]) * t;
+    }
+    px[i + 3] = 255;
+  }
+  x.putImageData(d, 0, 0);
+  mapTint.set(img, { v: C.version, c });
+  return c;
+}
 
 // ---------- Minimal rosbridge v2 client ----------
 class RosBridge {
@@ -580,7 +658,7 @@ function drawLidar() {
   const { ctx, w, h } = prepCanvas($('lidar'));
   const range = +$('lidarRange').value;
   const cx = w / 2, cy = h / 2, scale = Math.min(w, h) / 2 / range * 0.95;
-  ctx.strokeStyle = '#1f2833'; ctx.fillStyle = '#5b6573'; ctx.font = '10px system-ui'; ctx.lineWidth = 1;
+  ctx.strokeStyle = C.grid; ctx.fillStyle = C.dim; ctx.font = '10px system-ui'; ctx.lineWidth = 1;
   const step = range <= 2 ? 0.5 : range <= 4 ? 1 : 2;
   for (let r = step; r <= range + 1e-6; r += step) {
     ctx.beginPath(); ctx.arc(cx, cy, r * scale, 0, 2 * Math.PI); ctx.stroke();
@@ -645,19 +723,19 @@ function drawAttitude() {
   ctx.beginPath(); ctx.moveTo(cx - r * 0.5, cy); ctx.lineTo(cx - r * 0.15, cy);
   ctx.moveTo(cx + r * 0.15, cy); ctx.lineTo(cx + r * 0.5, cy); ctx.stroke();
   ctx.beginPath(); ctx.arc(cx, cy, 3, 0, 2 * Math.PI); ctx.fillStyle = '#d29922'; ctx.fill();
-  ctx.strokeStyle = '#2a323d'; ctx.lineWidth = 1;
+  ctx.strokeStyle = C.line; ctx.lineWidth = 1;
   ctx.beginPath(); ctx.arc(cx, cy, r, 0, 2 * Math.PI); ctx.stroke();
 
   // Compass (right half), car heading = EKF yaw (CCW positive), up = yaw 0
   const kx = w * 3 / 4;
-  ctx.beginPath(); ctx.arc(kx, cy, r, 0, 2 * Math.PI); ctx.fillStyle = '#0f141a'; ctx.fill(); ctx.stroke();
-  ctx.fillStyle = '#5b6573'; ctx.font = '10px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.beginPath(); ctx.arc(kx, cy, r, 0, 2 * Math.PI); ctx.fillStyle = C.dial; ctx.fill(); ctx.stroke();
+  ctx.fillStyle = C.dim; ctx.font = '10px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   for (let i = 0; i < 12; i++) {
     const a = i * Math.PI / 6;
     ctx.beginPath();
     ctx.moveTo(kx + Math.sin(a) * r * 0.85, cy - Math.cos(a) * r * 0.85);
     ctx.lineTo(kx + Math.sin(a) * r, cy - Math.cos(a) * r);
-    ctx.strokeStyle = '#2a323d'; ctx.stroke();
+    ctx.strokeStyle = C.line; ctx.stroke();
   }
   ctx.fillText('0°', kx, cy - r * 0.68);
   drawCar(ctx, kx, cy, -yaw, r * 2.4);
@@ -701,7 +779,7 @@ function drawTrail() {
   const scale = 80;   // px per metre
   const cx = w / 2, cy = h / 2;
   const toS = (x, y) => [cx - (y - pose.y) * scale, cy - (x - pose.x) * scale];
-  ctx.strokeStyle = '#1a212b'; ctx.lineWidth = 1;
+  ctx.strokeStyle = C['grid-2']; ctx.lineWidth = 1;
   const g = 0.5, ox = ((pose.y % g) + g) % g * scale, oy = ((pose.x % g) + g) % g * scale;
   for (let x = (cx + ox) % (g * scale); x < w; x += g * scale) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); }
   for (let y = (cy + oy) % (g * scale); y < h; y += g * scale) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
@@ -711,7 +789,7 @@ function drawTrail() {
     ctx.stroke();
   }
   drawCar(ctx, cx, cy, -pose.yaw, scale);
-  ctx.fillStyle = '#5b6573'; ctx.font = '10px system-ui'; ctx.fillText('grid 0.5 m', 6, h - 6);
+  ctx.fillStyle = C.dim; ctx.font = '10px system-ui'; ctx.fillText('grid 0.5 m', 6, h - 6);
 }
 
 // ---------- Battery / system ----------
@@ -842,7 +920,7 @@ async function slamPoll() {
   slam.path.push(...st.path.slice(0, Math.max(0, st.path_len - slam.path.length)));
   slam.st = st;
   if (mapMode === 'slam') $('slamState').style.color = st.running ? 'var(--ok)' : '';
-  if (mapMode === 'slam') $('slamState').textContent = st.running ? `mapping ${Math.floor(st.uptime_s / 60)}:${String(st.uptime_s % 60).padStart(2, '0')}` : 'off';
+  if (mapMode === 'slam') $('slamState').textContent = st.running ? `mapping ${Math.floor(st.uptime_s / 60)}:${String(st.uptime_s % 60).padStart(2, '0')}` : '';
   const ex = st.explore || {};
   $('slamStart').disabled = st.running || !!(nav.st && nav.st.running); $('slamStop').disabled = !st.running; $('slamSave').disabled = !st.map;
   $('exploreStart').disabled = ex.active || !!(nav.st && nav.st.running && !nav.st.slam_mode) || chargeMode !== 'off';
@@ -876,14 +954,14 @@ function drawSlam() {
   const { ctx, w, h } = prepCanvas($('slamMap'));
   const st = slam.st, m = st && st.map, img = slam.img;
   if (!m || !img) {
-    ctx.fillStyle = '#5b6573'; ctx.font = '13px system-ui';
+    ctx.fillStyle = C.dim; ctx.font = '13px system-ui';
     ctx.fillText(st && st.running ? 'Building map…' : 'Press "Start mapping" to build a map with the lidar', 12, 22);
     return;
   }
   const s = Math.min(w / img.width, h / img.height);                  // map pixels -> canvas
   const ox = (w - img.width * s) / 2, oy = (h - img.height * s) / 2;
   ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(img, ox, oy, img.width * s, img.height * s);
+  ctx.drawImage(themedMap(img), ox, oy, img.width * s, img.height * s);
   const toC = (x, y) => [ox + (x - m.origin[0]) / m.resolution * s, oy + (img.height - (y - m.origin[1]) / m.resolution) * s];
   if (slam.path.length > 1) {
     ctx.strokeStyle = '#3fb6ff'; ctx.lineWidth = 2; ctx.beginPath();
@@ -1055,7 +1133,7 @@ async function navPoll() {
       : 'Drive with a map saved in Mapping mode (on this car or another one). Start navigation, set the car\'s ' +
         'position, then pick a goal.';
     if (fleet.peers.length) $('slamInfo').textContent += ' Blue: other cars on the same map.';
-    $('slamState').textContent = !st.running ? 'off' : active ? 'driving to goal'
+    $('slamState').textContent = !st.running ? '' : active ? 'driving to goal'
       : st.pose_set ? `ready · ${st.map_name}` : `starting · ${st.map_name}`;
     $('slamState').style.color = active ? 'var(--warn)' : st.running ? 'var(--ok)' : '';
     if (!nav.tool) {
@@ -1100,13 +1178,13 @@ function drawNav() {
   const st = nav.st, v = navView(w, h);
   nav.view = v;
   if (!v) {
-    ctx.fillStyle = '#5b6573'; ctx.font = '13px system-ui';
+    ctx.fillStyle = C.dim; ctx.font = '13px system-ui';
     ctx.fillText(st && st.running ? 'Loading map…' : 'Pick a saved map and press "Start navigation"', 12, 22);
     return;
   }
   const preview = !(st && st.running);
   ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(v.img, v.ox, v.oy, v.img.width * v.s, v.img.height * v.s);
+  ctx.drawImage(themedMap(v.img), v.ox, v.oy, v.img.width * v.s, v.img.height * v.s);
   if (st.plan && st.plan.length > 1) {
     ctx.strokeStyle = '#3fb950'; ctx.lineWidth = 3; ctx.beginPath();
     st.plan.forEach((p, i) => { const [cx, cy] = v.toC(p[0], p[1]); i ? ctx.lineTo(cx, cy) : ctx.moveTo(cx, cy); });
@@ -1122,8 +1200,8 @@ function drawNav() {
     arrow(ctx, cx, cy, st.pose[2], 10, '#f85149');
   }
   if (preview) {
-    ctx.fillStyle = 'rgba(13,17,23,.75)'; ctx.fillRect(0, 0, w, 22);
-    ctx.fillStyle = '#c9d1d9'; ctx.font = '12px system-ui';
+    ctx.fillStyle = C.overlay; ctx.fillRect(0, 0, w, 22);
+    ctx.fillStyle = C.text; ctx.font = '12px system-ui';
     ctx.fillText(`Preview: ${v.m.name}` + (nav.preview.m.local ? '' : ` (on ${nav.preview.m.car})`) + ' · press "Start navigation"', 8, 15);
   }
   if (nav.drag) {
@@ -1138,7 +1216,7 @@ function drawPeers(ctx, v) {   // other cars navigating on this same map (same c
   for (const p of fleet.peers) {
     const nv = p.status && p.status.nav;
     if (!nv || !nv.running || nv.map_hash !== hash || !nv.pose_set || !nv.pose) continue;
-    const col = p.online ? '#58a6ff' : '#5b6573';
+    const col = p.online ? '#58a6ff' : C.dim;
     if (p.online && nv.plan && nv.plan.length > 1) {
       ctx.save(); ctx.setLineDash([6, 4]); ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.beginPath();
       nv.plan.forEach((q, i) => { const [cx, cy] = v.toC(q[0], q[1]); i ? ctx.lineTo(cx, cy) : ctx.moveTo(cx, cy); });
