@@ -8,7 +8,7 @@ other car's frame into this one).
    Nav2's fleet_layer marks in both costmaps, so the planner routes around it even where the lidar
    can't see it (around a corner). /fleet/clear (an empty 360-degree scan) wipes the old marks every
    cycle, so a car that drove on leaves no ghost behind. The body of a car that is driving to a goal is
-   grown by how far it can have moved since its status was sent (a parked one is not). Marks on this
+   lengthened by how far it can have moved since its status was sent (a parked one is not). Marks on this
    car's own footprint are left out: two cars can't overlap, so that is localization error, and it
    would put this car's start in an obstacle (the planner then finds no path at all). The lidar still
    sees the other car where it really is.
@@ -41,12 +41,13 @@ CLEAR_S = 2.0
 YIELD_MAX_S = 30.0
 CLEAR_RANGE = 8.0          # /fleet/clear wipes fleet marks within this range
 CLEAR_STEP_DEG = 0.25      # its ray spacing (1 deg left cells untouched between rays at ~2 m)
-OWN_MARGIN = 0.06          # no fleet marks within this of this car's own body
+OWN_MARGIN = 0.10          # no fleet marks within this of this car's own body (2 costmap cells)
 
 
 def body_points(x, y, yaw, grow):
-    """Points filling a car's footprint at (x, y, yaw), grown by `grow` m."""
-    f, b, w = BODY[0] + BODY_PAD + grow, BODY[1] - BODY_PAD - grow, BODY[2] + BODY_PAD + grow
+    """Points filling a car's footprint at (x, y, yaw), grown by `grow` m to the front and back (a car
+    can't move sideways: in the next fraction of a second it only moves along its length)."""
+    f, b, w = BODY[0] + BODY_PAD + grow, BODY[1] - BODY_PAD - grow, BODY[2] + BODY_PAD
     xs = np.arange(b, f + 1e-6, POINT_STEP)
     ys = np.arange(-w, w + 1e-6, POINT_STEP)
     gx, gy = np.meshgrid(xs, ys)

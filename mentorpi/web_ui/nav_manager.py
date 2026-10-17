@@ -10,7 +10,8 @@
 - go(x, y, yaw) / cancel(): NavigateToPose goal; feedback (distance left, recoveries) for the page.
 - Tight start: if a goal fails before the car has moved (it stands so close to a wall or the other car
   that Nav2 sees its start inside an obstacle and finds no path at all), the car creeps NUDGE_M straight
-  ahead (or back, whichever side the lidar shows room) and sends the goal once more (state "nudging").
+  ahead (or back, whichever side the lidar shows room) and sends the goal again (state "nudging"; at
+  most NUDGE_MAX times per goal).
 - pause(reason) / resume(): right of way (fleet.py): the goal is taken back from Nav2 (state "yielding",
   car stopped) and sent again later, so Nav2 doesn't count the wait as being stuck.
 - Gate: Nav2's output (/nav/cmd_vel, after its collision monitor) reaches the motors (/cmd_vel, speed +
@@ -49,6 +50,7 @@ SCAN_TOPIC = '/scan_raw'
 SCAN_FRESH_S = 1.0
 NUDGE_M = 0.15             # tight start: creep this far, then try the goal again (once)
 NUDGE_SPEED = 0.06
+NUDGE_MAX = 2              # creeps per goal
 NUDGE_ROOM = 0.25          # m free needed past the bumper in that direction
 BUMPER = {0: 0.14, 180: 0.13}   # lidar centre -> front / rear bumper
 
@@ -81,7 +83,7 @@ class NavManager:
         self.found = None          # last find_position() result (pose, sure, why, ...)
         self.auto_find = False     # find the position by itself once Nav2 is up
         self.goal_from = None      # where the car was when the goal was given (tight start check)
-        self.nudged = False
+        self.nudged = 0
 
         self.cmd_pub = node.create_publisher(Twist, '/cmd_vel', 1)
         self.pose_pub = node.create_publisher(PoseWithCovarianceStamped, '/initialpose', 1)
@@ -274,7 +276,9 @@ class NavManager:
         goal.pose.pose.orientation.z, goal.pose.pose.orientation.w = math.sin(yaw / 2), math.cos(yaw / 2)
         self.goal, self.goal_state, self.feedback, self.plan = [x, y, yaw], 'sending', {}, []
         if not retry:
-            self.goal_from, self.nudged = list(self.pose) if self.pose else None, False
+            self.goal_from, self.nudged = list(self.pose) if self.pose else None, 0
+        else:
+            self.goal_from = list(self.pose) if self.pose else None
         self.goal_seq += 1
         seq = self.goal_seq
         fut = self.client.send_goal_async(goal, feedback_callback=lambda m: self.on_feedback(m, seq))
@@ -317,8 +321,8 @@ class NavManager:
                         'aborted': 'could not reach the goal (no path, or stuck)'}[self.goal_state]
         self.node.get_logger().info(f'navigation goal {self.goal_state}')
         self.stop_motors()
-        if self.goal_state == 'aborted' and not self.slam_mode and not self.nudged and self._not_moved():
-            self.nudged = True
+        if self.goal_state == 'aborted' and not self.slam_mode and self.nudged < NUDGE_MAX and self._not_moved():
+            self.nudged += 1
             self.goal_state = 'nudging'
             threading.Thread(target=self._nudge, args=(self.goal_seq,), daemon=True).start()
 
