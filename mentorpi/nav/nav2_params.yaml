@@ -188,7 +188,8 @@ local_costmap:
           raytrace_max_range: 6.0
           raytrace_min_range: 0.0
           obstacle_max_range: 4.0
-          obstacle_min_range: 0.0
+          obstacle_min_range: 0.16    # closer = inside / touching the car (curtain, cables): marked under
+                                      # the car it made the planner refuse to start ("lethal space")
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 4.0
@@ -224,7 +225,8 @@ global_costmap:
           raytrace_max_range: 6.0
           raytrace_min_range: 0.0
           obstacle_max_range: 4.0
-          obstacle_min_range: 0.0
+          obstacle_min_range: 0.16    # closer = inside / touching the car (curtain, cables): marked under
+                                      # the car it made the planner refuse to start ("lethal space")
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 4.0
