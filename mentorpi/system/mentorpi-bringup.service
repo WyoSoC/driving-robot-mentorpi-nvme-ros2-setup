@@ -9,7 +9,10 @@ User=@USER@
 # Give USB serial devices a moment to appear after boot
 ExecStartPre=/bin/bash -c 'for i in $(seq 30); do [ -e /dev/rrc ] && [ -e /dev/ldlidar ] && exit 0; sleep 1; done; echo "WARNING: /dev/rrc or /dev/ldlidar missing" >&2'
 ExecStart=@DIR@/start_node.sh
-ExecStop=/usr/bin/docker exec -u ubuntu MentorPi /home/ubuntu/.stop_ros.sh
+# Hiwonder's ~/.stop_ros.sh has no #! line (exec format error when run directly): run it through a
+# shell. It kill -9s every process with "ros" in its command line (not the web server), itself
+# included, hence the "-" (ignore its exit code).
+ExecStop=-/usr/bin/docker exec -u ubuntu MentorPi /bin/zsh -c "~/.stop_ros.sh"
 Restart=on-failure
 RestartSec=5
 
