@@ -12,6 +12,9 @@
 - Charging mode (manual): GET /api/charging -> {"mode": "on" | "switching" | "off"},
   POST /api/charging?on=1|0 writes state/charging_request; the host (system/charging_mode.sh via
   mentorpi-charging.path) stops / restarts the robot software. This server keeps running.
+- Navigation (nav_manager.py, Nav2 in nav/): GET /api/nav (status, pose, plan), GET /api/nav/map.png?name=,
+  POST /api/nav/start?map=NAME | /api/nav/stop | /api/nav/pose?x=&y=&yaw= | /api/nav/go?x=&y=&yaw= |
+  /api/nav/cancel. Joystick input from the page cancels a navigation goal.
 - SLAM (slam_manager.py): GET /api/slam (status, pose, path), GET /api/slam/map.png,
   POST /api/slam/start | /api/slam/stop | /api/slam/save?name=NAME
 
@@ -40,6 +43,7 @@ from sensor_msgs.msg import Image
 from std_msgs.msg import String, UInt16
 
 from battery_estimator import BatteryEstimator
+from nav_manager import NavManager
 from slam_manager import SlamManager
 
 HTTP_PORT = int(os.environ.get('WEB_UI_PORT', 8000))
@@ -87,6 +91,7 @@ class WebBridge(Node):
         self.create_timer(1.0, self.read_charging_mode)
 
         self.slam = SlamManager(self)
+        self.nav = NavManager(self, self.slam.tf, self.slam)
 
     def read_charging_mode(self):
         try:
@@ -106,6 +111,9 @@ class WebBridge(Node):
         self.get_logger().info(f'charging mode {"on" if on else "off"} requested')
 
     def on_cmd(self, msg):
+        if (msg.linear.x or msg.angular.z) and self.nav.goal_active():
+            self.nav.cancel('goal canceled: manual driving')   # the person at the joystick wins
+            self.get_logger().info('navigation goal canceled by manual driving')
         out = Twist()
         out.linear.x = clamp(msg.linear.x, MAX_SPEED)
         out.angular.z = clamp(msg.angular.z, MAX_STEER)
@@ -178,6 +186,18 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
         if url.path == '/api/slam/map.png':
             png = slam.png
             return self._send(200, png, 'image/png') if png else self._send(404, {'error': 'no map yet'})
+        if url.path == '/api/nav':
+            return self._send(200, self.node.nav.status())
+        if url.path == '/api/nav/map.png':
+            name = urllib.parse.parse_qs(url.query).get('name', [''])[0]
+            if name not in self.node.nav.maps():
+                return self._send(404, {'error': 'no such map'})
+            try:
+                img = self.node.nav.map_meta(name)['image']
+                with open(os.path.join('/home/ubuntu/maps', os.path.basename(img)), 'rb') as f:
+                    return self._send(200, f.read(), 'image/png')
+            except (OSError, KeyError):
+                return self._send(404, {'error': 'map image missing'})
         return super().do_GET()
 
     def do_POST(self):
@@ -192,6 +212,28 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
             except OSError as exc:
                 return self._send(500, {'ok': False, 'message': f'cannot write request: {exc}'})
             return self._send(200, {'ok': True})
+        if url.path.startswith('/api/nav/'):
+            q = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
+            nav, action = self.node.nav, url.path[len('/api/nav/'):]
+            try:
+                if action == 'start':
+                    ok, msg = nav.start(q.get('map', ''))
+                elif action == 'stop':
+                    ok, msg = nav.stop()
+                elif action == 'cancel':
+                    ok, msg = nav.cancel()
+                elif action in ('pose', 'go'):
+                    x, y, yaw = float(q['x']), float(q['y']), float(q.get('yaw', 0))
+                    if not all(map(math.isfinite, (x, y, yaw))):
+                        raise ValueError
+                    ok, msg = (nav.set_pose if action == 'pose' else nav.go)(x, y, yaw)
+                else:
+                    return self._send(404, {'error': 'not found'})
+            except (KeyError, ValueError):
+                return self._send(400, {'ok': False, 'message': 'x, y (m) and yaw (rad) needed'})
+            return self._send(200 if ok else 400, {'ok': ok, 'message': msg})
+        if url.path == '/api/slam/start' and self.node.nav.running():
+            return self._send(400, {'ok': False, 'message': 'stop navigation first'})
         if url.path == '/api/slam/start':
             return self._send(200, {'ok': True, 'message': slam.start()})
         if url.path == '/api/slam/stop':
@@ -237,6 +279,7 @@ def main():
             node.stop()  # fails harmlessly if ROS already shut down (e.g. SIGTERM)
         except Exception:
             pass
+        node.nav.shutdown()
         node.slam.shutdown()
         node.destroy_node()
         rclpy.try_shutdown()

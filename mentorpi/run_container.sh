@@ -54,6 +54,7 @@ docker run -d \
     -v "$HOME/docker/tmp:/home/ubuntu/shared" \
     -v "$DIR/web_ui:/home/ubuntu/web_ui" \
     -v "$DIR/maps:/home/ubuntu/maps" \
+    -v "$DIR/nav:/home/ubuntu/nav" \
     -v "$DIR/state:/home/ubuntu/mentorpi_state" \
     -v "$DIR/calibration/imu_calib.yaml:/home/ubuntu/ros2_ws/src/calibration/config/imu_calib.yaml" \
     -v "$DIR/calibration/calibrate_params.yaml:/home/ubuntu/ros2_ws/src/driver/controller/config/calibrate_params.yaml" \

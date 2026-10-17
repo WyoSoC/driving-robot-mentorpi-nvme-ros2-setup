@@ -1,0 +1,330 @@
+# Nav2 for the MentorPi M1 (Ackermann: front steering, cannot turn on the spot), ROS 2 Humble.
+# Started by the web UI (web_ui/nav_manager.py -> nav/nav.launch.py) on a map saved with the Map panel.
+#
+# Car: base_footprint = centre between the axles; axles +0.067 / -0.070 m, track 0.14 m, body ~0.25 x
+# 0.18 m; lidar at x -0.01, 0.16 m up. Real top steering ~30 deg (servo reaches ~75% of command)
+# -> tightest turning radius ~0.25 m; plans use 0.40 m for margin and smooth driving.
+#
+# Command chain: controller_server / behavior_server -> /nav/cmd_vel_raw -> velocity_smoother
+# -> /nav/cmd_vel_smoothed -> collision_monitor (lidar) -> /nav/cmd_vel -> web_ui_server (passes it
+# to /cmd_vel only while a goal is active and the page is not E-stopped; joystick cancels the goal)
+# -> odom_publisher (/cmd_vel: speed + turn rate, clamped to 0.2 m/s and 0.5 rad/s).
+
+amcl:
+  ros__parameters:
+    use_sim_time: false
+    base_frame_id: base_footprint
+    odom_frame_id: odom
+    global_frame_id: map
+    scan_topic: /scan_raw
+    robot_model_type: "nav2_amcl::DifferentialMotionModel"   # car-like motion is close enough
+    laser_model_type: "likelihood_field"
+    laser_max_range: 8.0
+    laser_min_range: 0.1
+    max_beams: 90
+    min_particles: 500
+    max_particles: 2000
+    alpha1: 0.15      # rotation noise from rotation
+    alpha2: 0.15      # rotation noise from translation
+    alpha3: 0.15      # translation noise from translation
+    alpha4: 0.15
+    alpha5: 0.1
+    update_min_d: 0.08
+    update_min_a: 0.1
+    resample_interval: 1
+    sigma_hit: 0.2
+    z_hit: 0.5
+    z_rand: 0.5
+    z_max: 0.05
+    z_short: 0.05
+    lambda_short: 0.1
+    likelihood_max_dist: 2.0
+    pf_err: 0.05
+    pf_z: 0.99
+    recovery_alpha_fast: 0.0
+    recovery_alpha_slow: 0.0
+    save_pose_rate: 0.5
+    tf_broadcast: true
+    transform_tolerance: 1.0
+    set_initial_pose: false   # the web page sets it ("Set position")
+
+map_server:
+  ros__parameters:
+    use_sim_time: false
+    yaml_filename: ""         # set by nav.launch.py
+
+bt_navigator:
+  ros__parameters:
+    use_sim_time: false
+    global_frame: map
+    robot_base_frame: base_footprint
+    odom_topic: /odom
+    bt_loop_duration: 10
+    default_server_timeout: 20
+    default_nav_to_pose_bt_xml: /home/ubuntu/nav/navigate_ackermann.xml
+    default_nav_through_poses_bt_xml: /home/ubuntu/nav/navigate_through_poses_ackermann.xml
+    plugin_lib_names:
+      - nav2_compute_path_to_pose_action_bt_node
+      - nav2_compute_path_through_poses_action_bt_node
+      - nav2_smooth_path_action_bt_node
+      - nav2_follow_path_action_bt_node
+      - nav2_spin_action_bt_node
+      - nav2_wait_action_bt_node
+      - nav2_assisted_teleop_action_bt_node
+      - nav2_back_up_action_bt_node
+      - nav2_drive_on_heading_bt_node
+      - nav2_clear_costmap_service_bt_node
+      - nav2_is_stuck_condition_bt_node
+      - nav2_goal_reached_condition_bt_node
+      - nav2_goal_updated_condition_bt_node
+      - nav2_globally_updated_goal_condition_bt_node
+      - nav2_is_path_valid_condition_bt_node
+      - nav2_initial_pose_received_condition_bt_node
+      - nav2_reinitialize_global_localization_service_bt_node
+      - nav2_rate_controller_bt_node
+      - nav2_distance_controller_bt_node
+      - nav2_speed_controller_bt_node
+      - nav2_truncate_path_action_bt_node
+      - nav2_truncate_path_local_action_bt_node
+      - nav2_goal_updater_node_bt_node
+      - nav2_recovery_node_bt_node
+      - nav2_pipeline_sequence_bt_node
+      - nav2_round_robin_node_bt_node
+      - nav2_transform_available_condition_bt_node
+      - nav2_time_expired_condition_bt_node
+      - nav2_path_expiring_timer_condition
+      - nav2_distance_traveled_condition_bt_node
+      - nav2_single_trigger_bt_node
+      - nav2_goal_updated_controller_bt_node
+      - nav2_is_battery_low_condition_bt_node
+      - nav2_navigate_through_poses_action_bt_node
+      - nav2_navigate_to_pose_action_bt_node
+      - nav2_remove_passed_goals_action_bt_node
+      - nav2_planner_selector_bt_node
+      - nav2_controller_selector_bt_node
+      - nav2_goal_checker_selector_bt_node
+      - nav2_controller_cancel_bt_node
+      - nav2_path_longer_on_approach_bt_node
+      - nav2_wait_cancel_bt_node
+      - nav2_spin_cancel_bt_node
+      - nav2_back_up_cancel_bt_node
+      - nav2_assisted_teleop_cancel_bt_node
+      - nav2_drive_on_heading_cancel_bt_node
+      - nav2_is_battery_charging_condition_bt_node
+
+controller_server:
+  ros__parameters:
+    use_sim_time: false
+    controller_frequency: 10.0
+    min_x_velocity_threshold: 0.001
+    min_y_velocity_threshold: 0.5
+    min_theta_velocity_threshold: 0.001
+    failure_tolerance: 0.5
+    odom_topic: /odom
+    progress_checker_plugin: "progress_checker"
+    goal_checker_plugins: ["goal_checker"]
+    controller_plugins: ["FollowPath"]
+    progress_checker:
+      plugin: "nav2_controller::SimpleProgressChecker"
+      required_movement_radius: 0.2
+      movement_time_allowance: 15.0
+    goal_checker:
+      plugin: "nav2_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 0.20
+      yaw_goal_tolerance: 0.6      # a car can't fine-tune its heading in place
+      stateful: true
+    FollowPath:
+      plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
+      desired_linear_vel: 0.18
+      lookahead_dist: 0.5
+      min_lookahead_dist: 0.35
+      max_lookahead_dist: 0.8
+      lookahead_time: 2.0
+      use_velocity_scaled_lookahead_dist: true
+      transform_tolerance: 0.3
+      min_approach_linear_velocity: 0.06
+      approach_velocity_scaling_dist: 0.5
+      use_collision_detection: true
+      max_allowed_time_to_collision_up_to_carrot: 1.5
+      use_regulated_linear_velocity_scaling: true
+      regulated_linear_scaling_min_radius: 0.9
+      regulated_linear_scaling_min_speed: 0.08
+      use_cost_regulated_linear_velocity_scaling: false
+      use_rotate_to_heading: false   # Ackermann: never rotate in place
+      allow_reversing: true          # follow the planner's reversing segments (Reeds-Shepp)
+      rotate_to_heading_angular_vel: 0.5
+      rotate_to_heading_min_angle: 0.785
+      max_angular_accel: 2.0
+      max_robot_pose_search_dist: 10.0
+      use_interpolation: true
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      use_sim_time: false
+      update_frequency: 5.0
+      publish_frequency: 2.0
+      global_frame: odom
+      robot_base_frame: base_footprint
+      rolling_window: true
+      width: 3
+      height: 3
+      resolution: 0.05
+      footprint: "[[0.13, 0.09], [0.13, -0.09], [-0.12, -0.09], [-0.12, 0.09]]"
+      footprint_padding: 0.02
+      plugins: ["obstacle_layer", "inflation_layer"]
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: true
+        observation_sources: scan
+        scan:
+          topic: /scan_raw
+          data_type: "LaserScan"
+          max_obstacle_height: 2.0
+          clearing: true
+          marking: true
+          raytrace_max_range: 6.0
+          raytrace_min_range: 0.0
+          obstacle_max_range: 4.0
+          obstacle_min_range: 0.0
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        cost_scaling_factor: 4.0
+        inflation_radius: 0.35
+      always_send_full_costmap: true
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      use_sim_time: false
+      update_frequency: 1.0
+      publish_frequency: 0.5
+      global_frame: map
+      robot_base_frame: base_footprint
+      resolution: 0.05
+      track_unknown_space: true
+      footprint: "[[0.13, 0.09], [0.13, -0.09], [-0.12, -0.09], [-0.12, 0.09]]"
+      footprint_padding: 0.02
+      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_subscribe_transient_local: true
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: true
+        observation_sources: scan
+        scan:
+          topic: /scan_raw
+          data_type: "LaserScan"
+          max_obstacle_height: 2.0
+          clearing: true
+          marking: true
+          raytrace_max_range: 6.0
+          raytrace_min_range: 0.0
+          obstacle_max_range: 4.0
+          obstacle_min_range: 0.0
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        cost_scaling_factor: 4.0
+        inflation_radius: 0.35
+      always_send_full_costmap: true
+
+planner_server:
+  ros__parameters:
+    use_sim_time: false
+    expected_planner_frequency: 1.0
+    planner_plugins: ["GridBased"]
+    GridBased:
+      plugin: "nav2_smac_planner/SmacPlannerHybrid"   # Hybrid-A*: only paths a car can drive
+      downsample_costmap: false
+      downsampling_factor: 1
+      tolerance: 0.25
+      allow_unknown: false
+      max_iterations: 1000000
+      max_on_approach_iterations: 1000
+      max_planning_time: 3.0
+      motion_model_for_search: "REEDS_SHEPP"          # forward and reverse
+      angle_quantization_bins: 72
+      analytic_expansion_ratio: 3.5
+      analytic_expansion_max_length: 3.0
+      minimum_turning_radius: 0.40
+      reverse_penalty: 2.5        # prefer driving forward
+      change_penalty: 0.0
+      non_straight_penalty: 1.2
+      cost_penalty: 2.0
+      retrospective_penalty: 0.015
+      lookup_table_size: 20.0
+      cache_obstacle_heuristic: false
+      smooth_path: true
+      smoother:
+        max_iterations: 1000
+        w_smooth: 0.3
+        w_data: 0.2
+        tolerance: 1.0e-10
+        do_refinement: true
+        refinement_num: 2
+
+behavior_server:
+  ros__parameters:
+    use_sim_time: false
+    costmap_topic: local_costmap/costmap_raw
+    footprint_topic: local_costmap/published_footprint
+    cycle_frequency: 10.0
+    behavior_plugins: ["backup", "wait"]           # no spin: a car can't turn on the spot
+    backup:
+      plugin: "nav2_behaviors/BackUp"
+    wait:
+      plugin: "nav2_behaviors/Wait"
+    global_frame: odom
+    robot_base_frame: base_footprint
+    transform_tolerance: 0.5
+    simulate_ahead_time: 2.0
+    max_rotational_vel: 0.5
+    min_rotational_vel: 0.2
+    rotational_acc_lim: 1.5
+
+velocity_smoother:
+  ros__parameters:
+    use_sim_time: false
+    smoothing_frequency: 20.0
+    scale_velocities: false
+    feedback: "OPEN_LOOP"
+    max_velocity: [0.2, 0.0, 0.5]
+    min_velocity: [-0.15, 0.0, -0.5]
+    max_accel: [0.4, 0.0, 1.5]
+    max_decel: [-0.8, 0.0, -2.0]
+    odom_topic: /odom
+    odom_duration: 0.1
+    deadband_velocity: [0.0, 0.0, 0.0]
+    velocity_timeout: 1.0
+
+collision_monitor:
+  ros__parameters:
+    use_sim_time: false
+    base_frame_id: base_footprint
+    odom_frame_id: odom
+    cmd_vel_in_topic: /nav/cmd_vel_smoothed
+    cmd_vel_out_topic: /nav/cmd_vel
+    transform_tolerance: 0.5
+    source_timeout: 1.0          # no lidar for 1 s -> stop
+    stop_pub_timeout: 2.0
+    polygons: ["StopZone", "FootprintApproach"]
+    StopZone:                    # anything right next to the car: stop
+      type: "polygon"
+      points: [0.20, 0.13, 0.20, -0.13, -0.18, -0.13, -0.18, 0.13]
+      action_type: "stop"
+      max_points: 3
+      visualize: true
+      polygon_pub_topic: "collision_stop_zone"
+    FootprintApproach:           # slow down so the car never hits anything within 1.2 s, either direction
+      type: "polygon"
+      points: [0.14, 0.10, 0.14, -0.10, -0.13, -0.10, -0.13, 0.10]
+      action_type: "approach"
+      time_before_collision: 1.2
+      simulation_time_step: 0.1
+      max_points: 3
+      visualize: false
+    observation_sources: ["scan"]
+    scan:
+      type: "scan"
+      topic: /scan_raw

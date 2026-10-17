@@ -63,6 +63,11 @@
   .slam-bar input { background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
     border-radius: 8px; padding: 6px 8px; width: 12em; max-width: 100%; }
   .slam-info { font-size: 12px; color: var(--muted); margin-top: 8px; }
+  .slam-bar select { background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 8px; padding: 6px 8px; font: inherit; font-size: 13px; }
+  .slam-bar[hidden] { display: none; }
+  .btn.tool-on { background: var(--accent); color: #111; border-color: var(--accent); }
+  #slamMap.picking { cursor: crosshair; touch-action: none; }
   @media (max-width: 900px) {
     main { display: flex; flex-direction: column; align-items: stretch; }
     .col, .pair { display: contents; }
@@ -247,8 +252,18 @@
   </div>
 
   <section class="panel" id="mapPanel">
-    <h2>Map (SLAM) <span class="right pill" id="slamState">off</span></h2>
-    <div class="slam-bar">
+    <h2>Map <span class="right"><span class="tabs" id="mapTabs"><button data-mode="slam" class="active">Mapping</button><button data-mode="nav">Navigate</button></span>
+      <span class="pill" id="slamState">off</span></span></h2>
+    <div class="slam-bar" id="navBar" hidden>
+      <select id="navMap" title="Saved maps on this car"></select>
+      <button class="btn" id="navStart">Start navigation</button>
+      <button class="btn" id="navStop">Stop</button>
+      <button class="btn" id="navSetPose" title="Click where the car is on the map, drag in the direction it faces">📍 Set position</button>
+      <button class="btn" id="navGoTo" title="Click the destination, drag in the direction to arrive">🎯 Go to</button>
+      <button class="btn" id="navCancel">Cancel goal</button>
+      <span class="slam-info" id="navMsg"></span>
+    </div>
+    <div class="slam-bar" id="slamBar">
       <button class="btn" id="slamStart">Start mapping</button>
       <button class="btn" id="slamStop">Stop</button>
       <input id="slamName" placeholder="map name" maxlength="40">
@@ -462,6 +477,7 @@ function setEstop(on) {
   $('estop').textContent = on ? 'RELEASE E-STOP' : 'E-STOP';
   pad.classList.toggle('disabled', on);
   log(on ? 'E-STOP engaged' : 'E-STOP released');
+  if (on) fetch('/api/nav/cancel', { method: 'POST' }).catch(() => {});   // also stops navigation
 }
 $('estop').onclick = () => setEstop(!drive.estop);
 
@@ -776,6 +792,7 @@ pollCharging();
 // ---------- Map (SLAM) ----------
 // The server renders /map to a PNG and tracks the pose in the map frame (slam_manager.py).
 const slam = { st: null, img: null, imgVersion: 0, path: [] };
+let mapMode = 'slam';   // 'slam' (Mapping) or 'nav' (Navigate): which one the Map panel shows
 async function slamApi(action, query = '') {
   const r = await fetch(`/api/slam/${action}${query}`, { method: 'POST' });
   const j = await r.json().catch(() => ({ message: r.statusText }));
@@ -797,16 +814,16 @@ async function slamPoll() {
   if (st.path_len < slam.path.length) slam.path = [];                  // restarted
   slam.path.push(...st.path.slice(0, Math.max(0, st.path_len - slam.path.length)));
   slam.st = st;
-  $('slamState').textContent = st.running ? `mapping ${Math.floor(st.uptime_s / 60)}:${String(st.uptime_s % 60).padStart(2, '0')}` : 'off';
-  $('slamState').style.color = st.running ? 'var(--ok)' : '';
-  $('slamStart').disabled = st.running; $('slamStop').disabled = !st.running; $('slamSave').disabled = !st.running;
+  if (mapMode === 'slam') $('slamState').style.color = st.running ? 'var(--ok)' : '';
+  if (mapMode === 'slam') $('slamState').textContent = st.running ? `mapping ${Math.floor(st.uptime_s / 60)}:${String(st.uptime_s % 60).padStart(2, '0')}` : 'off';
+  $('slamStart').disabled = st.running || !!(nav.st && nav.st.running); $('slamStop').disabled = !st.running; $('slamSave').disabled = !st.map;
   if (st.map && st.map.version !== slam.imgVersion) {
     const img = new Image();
     img.onload = () => { slam.img = img; slam.imgVersion = st.map.version; drawSlam(); };
     img.src = `/api/slam/map.png?v=${st.map.version}`;
   }
   const m = st.map;
-  $('slamInfo').textContent = m
+  if (mapMode === 'slam') $('slamInfo').textContent = m
     ? `${(m.width * m.resolution).toFixed(1)} × ${(m.height * m.resolution).toFixed(1)} m · ${m.resolution * 100} cm/px` +
       (st.pose ? ` · car at (${st.pose[0].toFixed(2)}, ${st.pose[1].toFixed(2)}) m, ${deg(st.pose[2]).toFixed(0)}°` : '') +
       (st.maps.length ? ` · saved: ${st.maps.join(', ')}` : '')
@@ -814,6 +831,7 @@ async function slamPoll() {
   drawSlam();
 }
 function drawSlam() {
+  if (mapMode === 'nav') return drawNav();
   const { ctx, w, h } = prepCanvas($('slamMap'));
   const st = slam.st, m = st && st.map, img = slam.img;
   if (!m || !img) {
@@ -841,6 +859,163 @@ function drawSlam() {
   }
 }
 setInterval(slamPoll, 1000); slamPoll();
+
+// ---------- Navigation (Nav2 on a saved map) ----------
+// nav_manager.py runs Nav2; the page shows the saved map, the car (AMCL), the plan and the goal.
+// Set position / Go to: click a point on the map, drag in the heading direction, release.
+const nav = { st: null, img: null, imgName: null, tool: null, drag: null, view: null };
+function setMapMode(m) {
+  mapMode = m;
+  for (const b of $('mapTabs').children) b.classList.toggle('active', b.dataset.mode === m);
+  $('slamBar').hidden = m !== 'slam'; $('navBar').hidden = m !== 'nav';
+  setTool(null);
+  if (m === 'nav') navPoll(); else slamPoll();
+  drawSlam();
+}
+$('mapTabs').addEventListener('click', e => { if (e.target.dataset.mode) setMapMode(e.target.dataset.mode); });
+async function navApi(action, query = '') {
+  let j;
+  try {
+    const r = await fetch(`/api/nav/${action}${query}`, { method: 'POST' });
+    j = await r.json().catch(() => ({ message: r.statusText }));
+  } catch (e) { j = { message: `request failed: ${e}` }; }
+  $('navMsg').textContent = j.message || '';
+  if (j.message) log(`Navigation: ${j.message}`);
+  navPoll();
+  return j;
+}
+$('navStart').onclick = () => navApi('start', `?map=${encodeURIComponent($('navMap').value)}`);
+$('navStop').onclick = () => navApi('stop');
+$('navCancel').onclick = () => navApi('cancel');
+function setTool(tool) {
+  nav.tool = nav.tool === tool ? null : tool;
+  nav.drag = null;
+  $('navSetPose').classList.toggle('tool-on', nav.tool === 'pose');
+  $('navGoTo').classList.toggle('tool-on', nav.tool === 'go');
+  $('slamMap').classList.toggle('picking', !!nav.tool);
+  if (nav.tool) $('navMsg').textContent = nav.tool === 'pose'
+    ? 'Click where the car is, drag the way it faces, release.' : 'Click the destination, drag the way to arrive, release.';
+  drawNav();
+}
+$('navSetPose').onclick = () => setTool('pose');
+$('navGoTo').onclick = () => setTool('go');
+async function navPoll() {
+  let st;
+  try { st = await (await fetch('/api/nav')).json(); } catch { return; }
+  nav.st = st;
+  const sel = $('navMap'), keep = sel.value || (st.map_name ?? '');
+  if ([...sel.options].map(o => o.value).join() !== st.maps.join()) {
+    sel.innerHTML = st.maps.map(n => `<option>${n}</option>`).join('') || '<option value="">(no saved maps)</option>';
+  }
+  sel.value = st.running ? st.map_name : (st.maps.includes(keep) ? keep : st.maps[0] || '');
+  sel.disabled = st.running;
+  const active = st.goal_state === 'active' || st.goal_state === 'sending';
+  $('navStart').disabled = st.running || !st.maps.length || (slam.st && slam.st.running);
+  $('navStop').disabled = !st.running;
+  $('navSetPose').disabled = !st.running; $('navGoTo').disabled = !st.running || !st.pose_set;
+  $('navCancel').disabled = !active;
+  if (!st.running && nav.tool) setTool(null);
+  if (mapMode === 'nav') {
+    $('slamInfo').textContent = st.running
+      ? 'Red arrow: the car (lidar localization). Green: planned path and goal. The car stops if the lidar sees ' +
+        'something close; E-STOP or touching the joystick cancels the goal. Speed ≤ 0.2 m/s.'
+      : 'Drive with a map saved in Mapping mode. Start navigation, set the car\'s position, then pick a goal.';
+    $('slamState').textContent = !st.running ? 'off' : active ? 'driving to goal'
+      : st.pose_set ? `ready · ${st.map_name}` : `starting · ${st.map_name}`;
+    $('slamState').style.color = active ? 'var(--warn)' : st.running ? 'var(--ok)' : '';
+    if (!nav.tool) {
+      const fb = st.feedback || {};
+      $('navMsg').textContent = st.message + (active && fb.distance_left != null
+        ? ` · ${fb.distance_left.toFixed(2)} m left` + (fb.recoveries ? ` · ${fb.recoveries} recoveries` : '') : '');
+    }
+  }
+  if (st.running && st.map_name !== nav.imgName) {
+    const img = new Image(), name = st.map_name;
+    img.onload = () => { nav.img = img; nav.imgName = name; drawNav(); };
+    img.src = `/api/nav/map.png?name=${encodeURIComponent(name)}`;
+  }
+  if (!st.running) { nav.img = null; nav.imgName = null; }
+  drawNav();
+}
+setInterval(navPoll, 1000); navPoll();
+function navView(w, h) {
+  const m = nav.st && nav.st.map, img = nav.img;
+  if (!m || !img) return null;
+  const s = Math.min(w / img.width, h / img.height);
+  const ox = (w - img.width * s) / 2, oy = (h - img.height * s) / 2;
+  return {
+    s, ox, oy, img, m,
+    toC: (x, y) => [ox + (x - m.origin[0]) / m.resolution * s, oy + (img.height - (y - m.origin[1]) / m.resolution) * s],
+    toM: (cx, cy) => [m.origin[0] + (cx - ox) / s * m.resolution, m.origin[1] + (img.height - (cy - oy) / s) * m.resolution],
+  };
+}
+function arrow(ctx, cx, cy, yaw, r, color, outline) {
+  const a = -yaw;
+  ctx.beginPath();
+  ctx.moveTo(cx + r * Math.cos(a), cy + r * Math.sin(a));
+  ctx.lineTo(cx + r * Math.cos(a + 2.5), cy + r * Math.sin(a + 2.5));
+  ctx.lineTo(cx + r * Math.cos(a - 2.5), cy + r * Math.sin(a - 2.5));
+  ctx.closePath();
+  if (outline) { ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke(); } else { ctx.fillStyle = color; ctx.fill(); }
+}
+function drawNav() {
+  if (mapMode !== 'nav') return;
+  const { ctx, w, h } = prepCanvas($('slamMap'));
+  const st = nav.st, v = navView(w, h);
+  nav.view = v;
+  if (!v) {
+    ctx.fillStyle = '#5b6573'; ctx.font = '13px system-ui';
+    ctx.fillText(st && st.running ? 'Loading map…' : 'Pick a saved map and press "Start navigation"', 12, 22);
+    return;
+  }
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(v.img, v.ox, v.oy, v.img.width * v.s, v.img.height * v.s);
+  if (st.plan && st.plan.length > 1) {
+    ctx.strokeStyle = '#3fb950'; ctx.lineWidth = 3; ctx.beginPath();
+    st.plan.forEach((p, i) => { const [cx, cy] = v.toC(p[0], p[1]); i ? ctx.lineTo(cx, cy) : ctx.moveTo(cx, cy); });
+    ctx.stroke();
+  }
+  if (st.goal && (st.goal_state === 'active' || st.goal_state === 'sending')) {
+    const [cx, cy] = v.toC(st.goal[0], st.goal[1]);
+    arrow(ctx, cx, cy, st.goal[2], 11, '#3fb950', true);
+  }
+  if (st.pose && st.pose_set) {
+    const [cx, cy] = v.toC(st.pose[0], st.pose[1]);
+    arrow(ctx, cx, cy, st.pose[2], 10, '#f85149');
+  }
+  if (nav.drag) {
+    const { x0, y0, x1, y1 } = nav.drag;
+    ctx.strokeStyle = nav.tool === 'pose' ? '#f85149' : '#3fb950'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+    ctx.beginPath(); ctx.arc(x0, y0, 5, 0, 2 * Math.PI); ctx.stroke();
+  }
+}
+const mapCanvas = $('slamMap');
+mapCanvas.addEventListener('pointerdown', e => {
+  if (mapMode !== 'nav' || !nav.tool || !nav.view) return;
+  e.preventDefault();
+  mapCanvas.setPointerCapture(e.pointerId);
+  nav.drag = { x0: e.offsetX, y0: e.offsetY, x1: e.offsetX, y1: e.offsetY };
+  drawNav();
+});
+mapCanvas.addEventListener('pointermove', e => {
+  if (!nav.drag) return;
+  nav.drag.x1 = e.offsetX; nav.drag.y1 = e.offsetY;
+  drawNav();
+});
+mapCanvas.addEventListener('pointerup', e => {
+  const d = nav.drag, v = nav.view, tool = nav.tool;
+  if (!d || !v) return;
+  nav.drag = null;
+  const [x, y] = v.toM(d.x0, d.y0);
+  let yaw;
+  if (Math.hypot(d.x1 - d.x0, d.y1 - d.y0) >= 8) yaw = Math.atan2(-(d.y1 - d.y0), d.x1 - d.x0);   // screen y is down
+  else if (tool === 'go' && nav.st.pose) yaw = Math.atan2(y - nav.st.pose[1], x - nav.st.pose[0]);  // face away from the car
+  else yaw = nav.st.pose ? nav.st.pose[2] : 0;
+  setTool(null);
+  navApi(tool === 'pose' ? 'pose' : 'go', `?x=${x.toFixed(3)}&y=${y.toFixed(3)}&yaw=${yaw.toFixed(3)}`);
+});
+mapCanvas.addEventListener('pointercancel', () => { nav.drag = null; drawNav(); });
 
 addEventListener('resize', () => { drawLidar(); drawAttitude(); drawTrail(); drawSlam(); });
 drawLidar(); drawAttitude();
