@@ -40,7 +40,8 @@ CUR_MOTOR = float(sys.argv[4]) if len(sys.argv) > 4 else 1.0
 CUR_TRIM = int(float(sys.argv[5])) if len(sys.argv) > 5 else 0   # steering servo offset, us
 WHEELBASE = 0.145           # m, controller/ackermann.py
 SPEED = 0.2                 # m/s
-STEER = math.radians(20)    # circle steering angle (radius ~0.4 m)
+STEER = 0.5                 # rad/s commanded turn rate for the circles (0.4 m radius as commanded;
+                            # car 2 really turned ~0.8x that, ~0.5 m radius, ~1.1 m wide circles)
 WALL_MIN, WALL_MAX = 1.0, 4.0
 STOP_FRONT = 0.45           # m, abort if the front gets this close
 STOP_NEAR = 0.25            # m, abort during circles if anything is this close

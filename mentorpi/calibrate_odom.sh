@@ -78,8 +78,9 @@ how much it turns. Stops by itself if anything gets within 45 cm.
 EOF
 ;;
 angular) cat <<'EOF'
-Angular: place the car on the floor with ~1.2 m clear all around. It drives one full left circle
-and one right circle (~0.8 m wide) at 0.2 m/s. Stops if anything is within 25 cm.
+Angular: place the car on the floor with ~1.5 m clear to the left and right and ~1 m ahead and
+behind. It drives one full left circle and one right circle (~1.1 m wide) at 0.2 m/s. Stops if
+anything is within 25 cm.
 EOF
 ;;
 esac
