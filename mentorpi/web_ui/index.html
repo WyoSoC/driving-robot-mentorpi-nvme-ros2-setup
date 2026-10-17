@@ -1308,7 +1308,7 @@ async function navPoll() {
   sel.disabled = st.running;
   const pick = selectedMap();
   const yielding = st.goal_state === 'yielding';
-  const active = st.goal_state === 'active' || st.goal_state === 'sending' || yielding;
+  const active = st.goal_state === 'active' || st.goal_state === 'sending' || st.goal_state === 'nudging' || yielding;
   $('navStart').disabled = st.running || !pick || (!pick.local && !pick.online) || (slam.st && slam.st.running);
   $('navStop').disabled = !st.running;
   $('navFind').disabled = !st.running || st.slam_mode || st.finding || active;
@@ -1382,7 +1382,7 @@ function drawNav() {
     st.plan.forEach((p, i) => { const [cx, cy] = v.toC(p[0], p[1]); i ? ctx.lineTo(cx, cy) : ctx.moveTo(cx, cy); });
     ctx.stroke();
   }
-  if (st.goal && ['active', 'sending', 'yielding'].includes(st.goal_state)) {
+  if (st.goal && ['active', 'sending', 'yielding', 'nudging'].includes(st.goal_state)) {
     const [cx, cy] = v.toC(st.goal[0], st.goal[1]);
     arrow(ctx, cx, cy, st.goal[2], 11, '#3fb950', true);
   }

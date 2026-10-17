@@ -120,7 +120,7 @@ class Fleet:
             elif nv.get('map_hash') != mine:
                 continue
             out.append({'car': p['car'], 'x': float(x), 'y': float(y), 'yaw': yaw, 'age_s': p['age_s'],
-                        'driving': nv.get('goal_state') in ('sending', 'active'),
+                        'driving': nv.get('goal_state') in ('sending', 'active', 'nudging'),
                         'plan': plan,
                         'dist': (math.hypot(x - nav['pose'][0], y - nav['pose'][1]) if nav['pose'] else None)})
         return out

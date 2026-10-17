@@ -246,7 +246,7 @@ class Team:
                 continue
             pose = map_merge.transform(np.array([nv['pose'][:2]]), T)[0].tolist()
             goal = None
-            if nv.get('goal') and nv.get('goal_state') in ('sending', 'active', 'yielding'):
+            if nv.get('goal') and nv.get('goal_state') in ('sending', 'active', 'yielding', 'nudging'):
                 goal = map_merge.transform(np.array([nv['goal'][:2]]), T)[0].tolist()
             out.append({'car': p['car'], 'pose': pose, 'goal': goal})
         return out

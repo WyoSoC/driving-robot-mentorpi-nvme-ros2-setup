@@ -8,6 +8,9 @@
   itself once Nav2 is up, and from "Find position" on the page. If it is not sure, the best guess is
   shown and the position is set by hand.
 - go(x, y, yaw) / cancel(): NavigateToPose goal; feedback (distance left, recoveries) for the page.
+- Tight start: if a goal fails before the car has moved (it stands so close to a wall or the other car
+  that Nav2 sees its start inside an obstacle and finds no path at all), the car creeps NUDGE_M straight
+  ahead (or back, whichever side the lidar shows room) and sends the goal once more (state "nudging").
 - pause(reason) / resume(): right of way (fleet.py): the goal is taken back from Nav2 (state "yielding",
   car stopped) and sent again later, so Nav2 doesn't count the wait as being stuck.
 - Gate: Nav2's output (/nav/cmd_vel, after its collision monitor) reaches the motors (/cmd_vel, speed +
@@ -20,6 +23,8 @@ import signal
 import subprocess
 import threading
 import time
+
+import numpy as np
 
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
@@ -42,6 +47,10 @@ CMD_FRESH_S = 0.5          # Nav2 command older than this -> stop
 PLAN_STEP = 0.05           # m between plan points sent to the page
 SCAN_TOPIC = '/scan_raw'
 SCAN_FRESH_S = 1.0
+NUDGE_M = 0.15             # tight start: creep this far, then try the goal again (once)
+NUDGE_SPEED = 0.06
+NUDGE_ROOM = 0.25          # m free needed past the bumper in that direction
+BUMPER = {0: 0.14, 180: 0.13}   # lidar centre -> front / rear bumper
 
 
 def yaw_of(q):
@@ -71,6 +80,8 @@ class NavManager:
         self.finding = False
         self.found = None          # last find_position() result (pose, sure, why, ...)
         self.auto_find = False     # find the position by itself once Nav2 is up
+        self.goal_from = None      # where the car was when the goal was given (tight start check)
+        self.nudged = False
 
         self.cmd_pub = node.create_publisher(Twist, '/cmd_vel', 1)
         self.pose_pub = node.create_publisher(PoseWithCovarianceStamped, '/initialpose', 1)
@@ -248,7 +259,7 @@ class NavManager:
         self.plan = pts
 
     # ---- goals -----------------------------------------------------------------
-    def go(self, x, y, yaw):
+    def go(self, x, y, yaw, retry=False):
         if not self.running():
             return False, 'start navigation first'
         if not self.pose_set:
@@ -262,6 +273,8 @@ class NavManager:
         goal.pose.pose.position.x, goal.pose.pose.position.y = x, y
         goal.pose.pose.orientation.z, goal.pose.pose.orientation.w = math.sin(yaw / 2), math.cos(yaw / 2)
         self.goal, self.goal_state, self.feedback, self.plan = [x, y, yaw], 'sending', {}, []
+        if not retry:
+            self.goal_from, self.nudged = list(self.pose) if self.pose else None, False
         self.goal_seq += 1
         seq = self.goal_seq
         fut = self.client.send_goal_async(goal, feedback_callback=lambda m: self.on_feedback(m, seq))
@@ -304,13 +317,67 @@ class NavManager:
                         'aborted': 'could not reach the goal (no path, or stuck)'}[self.goal_state]
         self.node.get_logger().info(f'navigation goal {self.goal_state}')
         self.stop_motors()
+        if self.goal_state == 'aborted' and not self.slam_mode and not self.nudged and self._not_moved():
+            self.nudged = True
+            self.goal_state = 'nudging'
+            threading.Thread(target=self._nudge, args=(self.goal_seq,), daemon=True).start()
+
+    # ---- tight start ----------------------------------------------------------------
+    def _not_moved(self):
+        a, b = self.goal_from, self.pose
+        return a is not None and b is not None and math.hypot(a[0] - b[0], a[1] - b[1]) < 0.05
+
+    def _clearance(self, center_deg, half_width_deg=25):
+        if not self.scan or time.monotonic() - self.scan[0] > SCAN_FRESH_S:
+            return None
+        m = self.scan[1]
+        r = np.asarray(m.ranges, dtype=float)
+        a = np.degrees(m.angle_min + np.arange(len(r)) * m.angle_increment)
+        d = (a - center_deg + 180.0) % 360.0 - 180.0
+        sel = (np.abs(d) <= half_width_deg) & np.isfinite(r) & (r > 0.05)
+        return float(r[sel].min()) if sel.any() else 8.0
+
+    def _nudge(self, seq):
+        """Creep NUDGE_M ahead (or back) out of a tight start, then send the goal again."""
+        room = {d: (self._clearance(d) or 0.0) - BUMPER[d] for d in (0, 180)}
+        d = 0 if room[0] >= NUDGE_ROOM else 180 if room[180] >= NUDGE_ROOM else None
+        if d is None:
+            self.goal_state = 'aborted'
+            self.message = (f'no path: the car stands in a tight spot and has no room to creep out '
+                            f'(ahead {room[0]:.2f} m, behind {room[180]:.2f} m); move it by hand')
+            return
+        self.message = f'tight start: creeping {"forward" if d == 0 else "back"} {NUDGE_M:.2f} m, then trying again'
+        self.node.get_logger().info(f'{self.message} (room ahead {room[0]:.2f} m, behind {room[180]:.2f} m)')
+        start, t0, moved = self.pose, time.monotonic(), 0.0
+        tw = Twist()
+        tw.linear.x = NUDGE_SPEED if d == 0 else -NUDGE_SPEED
+        while (self.goal_state == 'nudging' and seq == self.goal_seq and self.running()
+               and time.monotonic() - t0 < NUDGE_M / NUDGE_SPEED + 3.0):
+            c = self._clearance(d)
+            if c is None or c - BUMPER[d] < 0.10:
+                break
+            if start and self.pose:
+                moved = math.hypot(self.pose[0] - start[0], self.pose[1] - start[1])
+                if moved >= NUDGE_M:
+                    break
+            self.cmd_pub.publish(tw)
+            time.sleep(0.1)
+        self.stop_motors()
+        time.sleep(0.5)
+        if self.goal_state != 'nudging' or seq != self.goal_seq:
+            return                                 # canceled (E-STOP, joystick, Cancel) meanwhile
+        self.node.get_logger().info(f'tight start: moved {moved:.2f} m, sending the goal again')
+        self.goal_state = 'idle'
+        ok, msg = self.go(*self.goal, retry=True)
+        if not ok:
+            self.goal_state, self.message = 'aborted', msg
 
     def cancel(self, reason='goal canceled'):
         handle = self.goal_handle
         if handle is not None:
             handle.cancel_goal_async()
             self.message = reason
-        if self.goal_state in ('sending', 'active', 'yielding'):
+        if self.goal_state in ('sending', 'active', 'yielding', 'nudging'):
             self.goal_state = 'canceled'
         self.goal_handle = None
         self.stop_motors()

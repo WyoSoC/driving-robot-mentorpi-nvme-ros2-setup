@@ -209,7 +209,7 @@ class WebBridge(Node):
         self.get_logger().info(f'charging mode {"on" if on else "off"} requested')
 
     def on_cmd(self, msg):
-        if (msg.linear.x or msg.angular.z) and (self.nav.goal_active() or self.nav.goal_state == 'yielding'):
+        if (msg.linear.x or msg.angular.z) and (self.nav.goal_active() or self.nav.goal_state in ('yielding', 'nudging')):
             self.nav.cancel('goal canceled: manual driving')   # the person at the joystick wins
             self.get_logger().info('navigation goal canceled by manual driving')
         out = Twist()

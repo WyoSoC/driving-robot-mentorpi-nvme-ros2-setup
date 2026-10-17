@@ -393,6 +393,10 @@ The Map panel's **Navigate** mode drives the car to a point on a saved map:
 3. **🎯 Go to**: click the destination, drag the way the car should arrive, release. The green line is
    the plan; the red arrow is the car (lidar localization, AMCL).
 4. **Cancel goal**, the **E-STOP**, or touching the joystick stops it.
+5. **Tight start:** a car parked against a wall or right next to the other car can stand, as far as Nav2
+   can tell, inside an obstacle; Nav2 then finds no path at all. If a goal fails before the car has
+   moved, it creeps 15 cm straight ahead (or back, whichever side the lidar shows ≥ 25 cm of room past
+   the bumper) at 6 cm/s and tries the goal once more ("tight start: creeping …").
 
 Set up for this car (`nav/nav2_params.yaml`, started by `web_ui/nav_manager.py` via `nav/nav.launch.py`):
 Test: `tests/run.sh test_localize.py` (simulated scans from random spots on every saved map, with noise,
