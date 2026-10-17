@@ -218,6 +218,13 @@ When both cars navigate on the **same map** and both know where they are (`web_u
 - E-STOP, Cancel goal or touching the joystick also cancels a waiting goal; it never resumes by itself
   after that.
 
+Drive-tested with both cars on one saved map (both found their own position from the lidar):
+- **Crossing**, cars parked side by side 40 cm apart against a wall: both crept 15 cm out of the tight
+  start; jpi2 waited ("waiting for jpi1 to pass"), then went on and arrived. jpi1 gave up then (the other
+  car's mark, grown all round, reached its nose; fixed: a driving car's mark is only lengthened).
+- **Head-on**, 1.2 m apart, driving towards each other's places: jpi1 waited while jpi2 turned across
+  its path, went 2 s after it was clear; both arrived in 25 s.
+
 Tested without driving (`tests/run.sh test_fleet.py`):
 - A real Nav2 costmap node received fake car positions. A parked car is marked, and its marks are
   gone after it moves.
