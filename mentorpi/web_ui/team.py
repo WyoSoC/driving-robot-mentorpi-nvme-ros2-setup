@@ -134,6 +134,7 @@ class Team:
         self._grid_cache = (None, None)   # (map version, encoded)
         self.pool = None
         self.team_msg = None       # last team map (with at least one matched car), else None
+        self.shared = None         # shared_map.SharedMap, set by the web server: the map the cars build together
         self._pub_key = None
         qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL, reliability=ReliabilityPolicy.RELIABLE)
         self.map_pub = node.create_publisher(OccupancyGrid, '/team/map', qos) if hasattr(node, 'create_publisher') else None
@@ -278,11 +279,19 @@ class Team:
                 self.slam.show_team_map(None)
             return
         mates = self.matched()
-        key = (id(own),) + tuple((m.car, id(m.grid), tuple(m.T)) for m in mates)
+        sh = self.shared
+        if sh is not None and sh.joined():       # the shared map (shared_map.py), in this car's frame
+            key = ('shared', sh.version)
+        else:
+            key = (id(own),) + tuple((m.car, id(m.grid), tuple(m.T)) for m in mates)
         if key == self._pub_key:
             return
         self._pub_key = key
-        if mates:
+        g = sh.grid_in_my_frame() if key[0] == 'shared' else None
+        if g is not None:
+            msg = grid_to_msg(g, self.node.get_clock().now().to_msg())
+            self.team_msg = msg
+        elif mates:
             msg = grid_to_msg(self.team_grid(grid_from_msg(own)), self.node.get_clock().now().to_msg())
             self.team_msg = msg
         else:

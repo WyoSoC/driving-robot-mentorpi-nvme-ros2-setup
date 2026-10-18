@@ -66,6 +66,7 @@ from depth_obstacles import DepthObstacles
 from explore_manager import Explorer
 from fleet import Fleet
 from team import Team
+from shared_map import SharedMap
 from nav_manager import NavManager
 from peer_manager import PeerManager
 from slam_manager import SlamManager
@@ -126,6 +127,8 @@ class WebBridge(Node):
         self.team = Team(self, self.slam, self.peers, CAR_NAME)      # mapping together
         self.explorer.team = self.team
         self.fleet = Fleet(self, self.slam.tf, self.nav, self.peers, CAR_NAME, self.team)
+        self.shared = SharedMap(self, self.slam, self.nav, self.team, self.peers, CAR_NAME)   # one map for all
+        self.team.shared = self.shared
         self.merge_lock = threading.Lock()
         self.merge_cache = {}      # (hash a, hash b) -> align result
 
@@ -184,6 +187,7 @@ class WebBridge(Node):
                    | {'map_hash': nav['map']['hash'] if nav['map'] else None,
                       'yield_to': self.fleet.yield_to},
             'slam': slam_on,
+            'shared': {k: v for k, v in self.shared.status().items() if k in ('joined', 'leader', 'hash', 'frames')},
             'maps': [{k: m[k] for k in ('name', 'hash', 'resolution', 'origin')} for m in map_store.listing()],
         }
 
@@ -286,6 +290,14 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
         if url.path == '/api/slam/map.png':
             png = slam.png
             return self._send(200, png, 'image/png') if png else self._send(404, {'error': 'no map yet'})
+        if url.path == '/api/shared/frames':
+            try:
+                since = int(urllib.parse.parse_qs(url.query).get('since', ['0'])[0])
+            except ValueError:
+                return self._send(400, {'error': 'since: keyframe number'})
+            return self._send(200, self.node.shared.frames_json(since))
+        if url.path == '/api/shared/state':
+            return self._send(200, self.node.shared.state_json())
         if url.path == '/api/slam/grid':
             g = self.node.team.my_grid_json()
             return self._send(200, g) if g else self._send(404, {'error': 'not mapping'})

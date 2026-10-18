@@ -284,6 +284,20 @@ def fill(a, b, T):
     return out
 
 
+def resample(g, T):
+    """Grid g put into another frame with T (g's frame -> the new frame), same resolution."""
+    res = g['res']
+    h, w = g['data'].shape
+    corners = transform(np.array([[0, 0], [w, 0], [0, h], [w, h]], float) * res + g['origin'], T)
+    lo = np.floor(corners.min(axis=0) / res) * res
+    hi = corners.max(axis=0)
+    W, H = (np.ceil((hi - lo) / res)).astype(int)
+    out = {'data': np.full((H, W), UNK, np.uint8), 'res': res, 'origin': [float(lo[0]), float(lo[1])]}
+    xy = cells_xy(out, np.ones((H, W), bool))
+    out['data'] = lookup(g, transform(xy, invert(T))).reshape(H, W)
+    return out
+
+
 def overlay_png(a, b, T):
     """Picture for checking: a's walls blue, b's walls (moved) red, both = purple, floor grey."""
     m = merge(a, b, T)

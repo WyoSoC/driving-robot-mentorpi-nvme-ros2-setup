@@ -639,7 +639,10 @@ class Explorer:
         if not mates or any(m.car < self.car for m in mates):
             return None
         from team import grid_from_msg
-        merged = self.team.merged_grid(grid_from_msg(self.slam.grid))
+        sh = self.team.shared
+        merged = sh.shared_grid()[0] if sh is not None and sh.joined() else None   # leader's frame = mine
+        if merged is None:
+            merged = self.team.merged_grid(grid_from_msg(self.slam.grid))
         name = datetime.now().strftime('team_%Y%m%d_%H%M')
         if name in map_store.names():
             return None
@@ -686,4 +689,5 @@ class Explorer:
             'saved_as': self.saved_as,
             'team_saved_as': self.team_saved_as,
             'team': self.team.status() if self.team else [],
+            'shared': self.team.shared.status() if self.team and self.team.shared else None,
         }

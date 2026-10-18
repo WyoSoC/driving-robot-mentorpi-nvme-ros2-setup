@@ -1039,6 +1039,12 @@ async function slamPoll() {
   if (mapMode === 'slam' && ex.team && ex.team.length)
     $('slamInfo').textContent += ' · ' + ex.team.map(t => `${t.car}: ${t.note}`).join(', ') +
       (ex.team.some(t => t.matched) ? ' (blue: the other car, in this map)' : '');
+  const sh = ex.shared;
+  if (mapMode === 'slam' && sh && sh.joined) {
+    const n = Object.entries(sh.frames).filter(([c]) => sh.cars.includes(c)).map(([c, k]) => `${c} ${k}`).join(', ');
+    const same = Object.entries(sh.same_as).map(([c, ok]) => ok ? `same as ${c} ✓` : `${c}: syncing…`).join(', ');
+    $('slamInfo').textContent += ` · SHARED MAP (frame of ${sh.leader}; scans: ${n})${same ? ' · ' + same : ''}`;
+  }
   if (mapMode === 'slam' && ex.team_saved_as) $('slamInfo').textContent += ` · team map "${ex.team_saved_as}"`;
   if (mapMode === 'slam' && ex.goals && (ex.active || ex.state === 'done' || ex.state === 'stopped'))
     $('slamInfo').textContent += ` · explored ${ex.mapped_m2} m², goals: ${ex.goals.reached} reached, ` +
