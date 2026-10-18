@@ -187,6 +187,7 @@ class WebBridge(Node):
                    | {'map_hash': nav['map']['hash'] if nav['map'] else None,
                       'yield_to': self.fleet.yield_to},
             'slam': slam_on,
+            'slam_pose': self.slam.pose if slam_on else None,
             'shared': {k: v for k, v in self.shared.status().items() if k in ('joined', 'leader', 'hash', 'frames')},
             'maps': [{k: m[k] for k in ('name', 'hash', 'resolution', 'origin')} for m in map_store.listing()],
         }

@@ -1032,7 +1032,10 @@ async function slamPoll() {
   const m = st.map;
   if (mapMode === 'slam') $('slamInfo').textContent = m
     ? `${(m.width * m.resolution).toFixed(1)} × ${(m.height * m.resolution).toFixed(1)} m · ${Math.round(m.resolution * 100)} cm/px` +
-      (st.pose ? ` · car at (${st.pose[0].toFixed(2)}, ${st.pose[1].toFixed(2)}) m, ${deg(st.pose[2]).toFixed(0)}°` : '') +
+      (st.pose ? (() => { const V = st.view, p = st.pose, c = V ? Math.cos(V[2]) : 1, s = V ? Math.sin(V[2]) : 0;
+        const x = V ? V[0] + c * p[0] - s * p[1] : p[0], y = V ? V[1] + s * p[0] + c * p[1] : p[1];
+        return ` · car at (${x.toFixed(2)}, ${y.toFixed(2)}) m, ${deg(Math.atan2(Math.sin(p[2] + (V ? V[2] : 0)), Math.cos(p[2] + (V ? V[2] : 0)))).toFixed(0)}°` +
+          (V ? ' (shared map)' : ''); })() : '') +
       (st.maps.length ? ` · saved: ${st.maps.join(', ')}` : '')
     : (st.running ? 'waiting for the first map…' : `Not mapping.${st.maps.length ? ' Saved maps: ' + st.maps.join(', ') : ''}`);
   if (mapMode === 'slam' && ex.active) $('slamInfo').textContent += ' · Orange: unmapped edges · square: start · green: next goal';
@@ -1094,7 +1097,9 @@ function drawSlam() {
     arrow(ctx, gx, gy, ex.goal[2] + va, 11, '#3fb950', true);
   }
   for (const t of ex.team || []) {             // other cars mapping with this one, moved into this map
-    const p = fleet.peers.find(q => q.car === t.car), nv = p && p.status && p.status.nav;
+    const p = fleet.peers.find(q => q.car === t.car), nv0 = p && p.status && p.status.nav;
+    // its pose from navigation, or from its mapping (SLAM) while it only maps
+    const nv = nv0 && nv0.pose ? nv0 : p && p.status && p.status.slam_pose ? { pose: p.status.slam_pose } : null;
     if (!t.T || !nv || !nv.pose) continue;
     const [tx, ty, ta] = t.T, c = Math.cos(ta), sn = Math.sin(ta);
     const mv = (x, y) => [tx + c * x - sn * y, ty + sn * x + c * y];
