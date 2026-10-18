@@ -58,11 +58,12 @@ def _worker_init():
     os.nice(NICE)
 
 
-def _align_job(mine, other, start):
-    """In the worker process: refine from `start` if given and good, else full search."""
+def _align_job(mine, other, start, keep=False):
+    """In the worker process: refine from `start` if given and good, else full search. keep: `start` is a
+    confirmed match, which only has to stay good (map_merge.still_good), not overlap as much as at first."""
     if start is not None:
         T, q = map_merge.refine(mine, other, start)
-        if map_merge.good_match(q):
+        if map_merge.good_match(q) or (keep and map_merge.still_good(q)):
             return T, q, 'refine'
     T, q = map_merge.align(mine, other)
     return T, q, 'full'
@@ -141,12 +142,12 @@ class Team:
         threading.Thread(target=self._loop, daemon=True).start()
         threading.Thread(target=self._publish_loop, daemon=True).start()
 
-    def _run(self, mine, other, start):
+    def _run(self, mine, other, start, keep=False):
         if self.pool is None:
             self.pool = concurrent.futures.ProcessPoolExecutor(
                 max_workers=1, mp_context=multiprocessing.get_context('spawn'), initializer=_worker_init)
         try:
-            return self.pool.submit(_align_job, mine, other, start).result(timeout=ALIGN_TIMEOUT)
+            return self.pool.submit(_align_job, mine, other, start, keep).result(timeout=ALIGN_TIMEOUT)
         except Exception:
             self.pool.shutdown(wait=False, cancel_futures=True)   # broken or stuck worker: start a new one
             self.pool = None
@@ -218,12 +219,13 @@ class Team:
         start = m.T if m.T is not None else m.candidate
         if start is None and m.full_at and t0 - m.full_at < FULL_EVERY_S:
             return                                   # not matched: full search only every FULL_EVERY_S
-        T, q, how = self._run(mine, m.grid, start)
+        T, q, how = self._run(mine, m.grid, start, keep=m.T is not None)
         if how == 'full':
             m.full_at = t0
         m.checked_at, m.quality = time.time(), q
         took = time.time() - t0
-        if T is None or not map_merge.good_match(q):
+        ok = map_merge.good_match(q) or (how == 'refine' and m.T is not None and map_merge.still_good(q))
+        if T is None or not ok:
             m.fails += 1
             m.candidate = None
             if m.T is not None and m.fails >= LOST_AFTER:

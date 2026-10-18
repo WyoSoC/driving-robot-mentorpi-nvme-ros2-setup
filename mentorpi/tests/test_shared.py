@@ -172,6 +172,18 @@ def main():
     full = time.time() - t0
     print(f'6. {len(allf)} keyframes: full rebuild {full:.2f} s ({full / len(allf) * 1000:.0f} ms each); '
           f'each update step up to {max(t_build) * 1000:.0f} ms')
+    # 7. a re-anchored keyframe: old contribution out, new in -> same as building from scratch, on both cars
+    f = A.frames['jpi1'][5]
+    A.rev += 1
+    A.frames['jpi1'][5] = dict(f, pose=[f['pose'][0] + 0.05, f['pose'][1] - 0.03, f['pose'][2] + 0.02], rev=A.rev)
+    A.update(); B.fetch(); B.update()
+    g = sm.Grid()
+    for c, fs in A.frames.items():
+        for fr in fs.values():
+            g.add(fr, A.T_used[c])
+    ha, hb, hf = A.status()['hash'], B.status()['hash'], sm.grid_hash(g.to_grid())
+    print(f'7. one keyframe re-anchored: jpi1 {ha}, jpi2 {hb}, built from scratch {hf}')
+    assert ha == hb == hf
     print('ALL OK')
 
 

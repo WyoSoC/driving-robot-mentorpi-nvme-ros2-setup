@@ -545,13 +545,30 @@ One map that the mapping cars build together and that is the same, cell for cell
    (a lidar hit +9, a ray passing through −4; occupied from +5, free from −4). Integer sums don't depend
    on the order keyframes arrive in, so cars with the same keyframes and transforms hold the same map.
    Each car reports a hash of its map; the page shows "same as jpi2 ✓" (or "syncing…").
-4. **Drift:** when the leader's estimate of a car's frame moves, every car rebuilds the map from all
-   keyframes (5 ms per keyframe on the Pi).
+4. **Drift between the cars:** when the leader's estimate of a car's frame moves, every car rebuilds the
+   map from all keyframes (5 ms per keyframe on the Pi).
+5. **Re-anchoring:** a car's SLAM later corrects its own map (loop closure), but its keyframes keep the
+   pose they were stored with. So each car keeps fitting its own keyframes to its own latest SLAM map
+   (the scan matching of "Find position", 4 per half second). A keyframe whose fit moved ≥ 3 cm or 1°
+   gets the new pose and a new revision, and the other cars fetch it again. Every car takes the old
+   contribution out of the map and adds the new one. With integers this is exact, so the map stays the
+   same on every car.
 
 The page shows the shared map in the shared frame, so both cars' pages show the same picture, with this
 car in red and the other in blue. Nav2 plans on it and the explorer picks its frontiers from it
 (`/team/map`, in each car's own frame). Before the maps are lined up, each car maps on its own.
-Not yet: corrections this car's SLAM makes later (loop closure) don't move keyframes stored before.
+
+**Starting in a new place** (no saved map at all): put the cars near each other, so their first scans
+see the same walls; any direction, a few metres apart is fine. Tick **together** and start exploring.
+Each car maps in place until the shared map has joined ("waiting for the other car's map to line up",
+30 s at most; usually ~10 s), then they go their separate ways, already on one map. A match that was
+confirmed is kept while the maps grow apart: then only walls have to agree and not clash, without the
+share of overlap needed for a first match, because the cars may share only the start area.
+`tests/run.sh test_new_place.py` simulates this: a made-up 16 × 10 m apartment, cars start 0.6 m apart
+in the middle room, one tours the west wing and the other the east wing (up to 14 m apart). jpi2's SLAM
+drifts 1°/m and corrects it later. Result: joined after 1 m, never dropped, same map on both, walls
+agree 97% with the real plan (85% without re-anchoring), 91–98% of each wing mapped. The match is
+5 cm off where the cars are.
 
 Tests: `tests/run.sh test_shared.py`. Two simulated cars drive the living-room map in their own frames.
 Result: same map on both, walls agree 1.00 with the real room, independent of keyframe order, rebuilt

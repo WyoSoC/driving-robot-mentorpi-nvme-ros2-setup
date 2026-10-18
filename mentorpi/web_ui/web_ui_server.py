@@ -434,9 +434,10 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
                 return self._send(400, {'ok': False, 'message': 'radius in m (0 = no limit)'})
             qs = urllib.parse.parse_qs(url.query)
             dry = qs.get('dry', ['0'])[0] == '1'
-            ok, msg = self.node.explorer.start(radius, dry=dry)
-            if ok and qs.get('team', ['0'])[0] == '1':
-                msg += self.node.team_forward('start', ('idle',), radius=radius, dry=int(dry))
+            team = qs.get('team', ['0'])[0] == '1'
+            ok, msg = self.node.explorer.start(radius, dry=dry, wait_join=team or qs.get('wait', ['0'])[0] == '1')
+            if ok and team:
+                msg += self.node.team_forward('start', ('idle',), radius=radius, dry=int(dry), wait=1)
             return self._send(200 if ok else 400, {'ok': ok, 'message': msg})
         if url.path == '/api/explore/stop':
             ok, msg = self.node.explorer.stop()

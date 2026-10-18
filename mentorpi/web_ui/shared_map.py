@@ -17,10 +17,15 @@ Each car still runs its own SLAM: that is how it knows where it is. On top of it
    same).
 4. When the leader's estimate of a car's frame moves (it refines the match as the maps grow), the map is
    rebuilt from all keyframes, so slow drift between the cars doesn't smear walls.
+5. Re-anchoring: a car's SLAM corrects its map later (loop closure), but a keyframe keeps the pose it was
+   stored with. So each car keeps fitting its own keyframes to its own latest SLAM map (scan matching as
+   in localize.py, a few per step); a keyframe whose fitted pose moved by REANCHOR_M / REANCHOR_DEG gets
+   the new pose and a new revision, the other cars fetch it again (by revision), and every car takes its
+   old contribution out of the map and adds the new one (exact with integers: the map stays the same on
+   every car).
 
 The map is shown on the page, Nav2 plans on it and the explorer picks its frontiers from it (team.py
-publishes it as /team/map, in this car's own frame). Not covered yet: corrections that this car's SLAM
-makes later (loop closure) don't move keyframes stored before.
+publishes it as /team/map, in this car's own frame).
 """
 import base64
 import hashlib
@@ -32,6 +37,7 @@ import time
 
 import numpy as np
 
+import localize
 import map_merge
 
 KEY_M = 0.20               # keyframe every this far driven ...
@@ -46,10 +52,16 @@ FETCH_S = 1.0
 FETCH_MAX = 200            # keyframes per request
 T_MOVE_M, T_MOVE_DEG = 0.03, 0.5   # leader: publish a new transform only if it moved this much
 NICE = 10
+REANCHOR_PER_STEP = 4      # own keyframes fitted to the own SLAM map per step
+REANCHOR_M, REANCHOR_DEG = 0.03, 1.0   # fitted pose moved this much: update the keyframe
+REANCHOR_MAX_M = 0.6       # ... but not further (a fit that far off is a wrong fit)
+REANCHOR_INLIERS = 0.6     # share of the scan on walls of the own map for a fit to count
+REANCHOR_POINTS = 180
+REANCHOR_AGE = 3           # newest keyframes are skipped (the SLAM map may not include them yet)
 
 
 def encode_frame(f):
-    return {'car': f['car'], 'seq': f['seq'], 'pose': f['pose'], 'mount': f['mount'],
+    return {'car': f['car'], 'seq': f['seq'], 'rev': f.get('rev', 0), 'pose': f['pose'], 'mount': f['mount'],
             'amin': f['amin'], 'inc': f['inc'],
             'r': base64.b64encode(np.asarray(f['r'], '<u2').tobytes()).decode()}
 
@@ -60,11 +72,11 @@ def decode_frame(d):
     return out
 
 
-def make_frame(car, seq, pose, mount, ranges, amin, inc):
+def make_frame(car, seq, pose, mount, ranges, amin, inc, rev=0):
     """A keyframe exactly as the other cars will receive it (ranges in mm, 0 = no return)."""
     r = np.asarray(ranges, float)
     mm = np.where(np.isfinite(r) & (r > 0.05) & (r < 60.0), np.round(r * 1000.0), 0).astype('<u2')
-    f = {'car': car, 'seq': seq, 'pose': [float(v) for v in pose], 'mount': [float(v) for v in mount],
+    f = {'car': car, 'seq': seq, 'rev': rev, 'pose': [float(v) for v in pose], 'mount': [float(v) for v in mount],
          'amin': float(amin), 'inc': float(inc), 'r': mm}
     return decode_frame(json.loads(json.dumps(encode_frame(f))))   # same floats as after the trip
 
@@ -78,8 +90,9 @@ class Grid:
         self.L = np.zeros((n, n), np.int32)
         self.steps = np.arange(0.0, MAX_R, RES / 2)
 
-    def add(self, f, T):
-        """Add keyframe f (pose in its car's frame) with T = its car's frame -> shared frame."""
+    def add(self, f, T, sign=1):
+        """Add keyframe f (pose in its car's frame) with T = its car's frame -> shared frame; sign=-1 takes
+        exactly that contribution out again."""
         x, y, th = map_merge.compose(T, f['pose'])
         mx, my, myaw = f['mount']
         lx, ly = x + math.cos(th) * mx - math.sin(th) * my, y + math.sin(th) * mx + math.cos(th) * my
@@ -98,8 +111,8 @@ class Grid:
         hits = np.unique(self._cells(lx + c[hit] * r[hit], ly + s[hit] * r[hit]))
         free = np.setdiff1d(free, hits, assume_unique=True)
         free, hits = free[free >= 0], hits[hits >= 0]
-        self.L.flat[free] += MISS
-        self.L.flat[hits] += HIT
+        self.L.flat[free] += sign * MISS
+        self.L.flat[hits] += sign * HIT
 
     def _cells(self, x, y):
         c = np.floor((x - self.origin[0]) / RES).astype(np.int64)
@@ -142,13 +155,19 @@ class SharedMap:
         self.lock = threading.Lock()
         self.frames = {}           # car -> {seq: frame}
         self.seq = 0
+        self.rev = 0               # revision of this car's keyframes (new or re-anchored)
+        self.got = {}              # car -> last revision received
+        self.sessions = {}         # car -> its mapping run (a new run: start over with its keyframes)
+        self.anchor_i = 0
+        self._field = (None, None)   # (own SLAM map message, localize._Field of it)
+        self.reanchored = 0
         self.last_key = None       # pose of this car's last keyframe
         self.mount = None
         self.T_pub = {}            # leader: car -> its frame in mine, as published
         self.leader_state = None   # follower: the leader's /api/shared/state
         self.leader = me
         self.T_used = {}           # transforms the grid was built with
-        self.added = set()         # (car, seq) in the grid
+        self.added = {}            # (car, seq) -> pose the keyframe is in the grid with
         self.grid = Grid()
         self.out = None            # (map_merge grid in the shared frame, hash)
         self.version = 0
@@ -171,7 +190,9 @@ class SharedMap:
         if self.mount is None:
             self.mount = self._mount(msg.header.frame_id)
         self.seq += 1
-        f = make_frame(self.me, self.seq, pose, self.mount, msg.ranges, msg.angle_min, msg.angle_increment)
+        self.rev += 1
+        f = make_frame(self.me, self.seq, pose, self.mount, msg.ranges, msg.angle_min, msg.angle_increment,
+                       rev=self.rev)
         with self.lock:
             self.frames.setdefault(self.me, {})[self.seq] = f
         self.last_key = list(pose)
@@ -187,12 +208,46 @@ class SharedMap:
             return [0.0, 0.0, 0.0]
 
     def frames_json(self, since=0):
-        """This car's keyframes after seq `since` (GET /api/shared/frames)."""
+        """This car's keyframes new or re-anchored after revision `since` (GET /api/shared/frames)."""
         with self.lock:
             mine = self.frames.get(self.me, {})
-            seqs = sorted(s for s in mine if s > since)[:FETCH_MAX]
+            fs = sorted((f for f in mine.values() if f['rev'] > since), key=lambda f: f['rev'])[:FETCH_MAX]
             return {'car': self.me, 'session': self.session,
-                    'frames': [encode_frame(mine[s]) for s in seqs], 'last': self.seq}
+                    'frames': [encode_frame(f) for f in fs], 'last': self.rev}
+
+    # ---- re-anchoring this car's keyframes to its own (corrected) SLAM map --------------------
+    def reanchor(self):
+        own = self.slam.grid
+        with self.lock:
+            mine = self.frames.get(self.me, {})
+            seqs = sorted(mine)[:-REANCHOR_AGE] if len(mine) > REANCHOR_AGE else []
+        if own is None or not seqs:
+            return
+        if self._field[0] is not own:
+            from team import grid_from_msg
+            g = grid_from_msg(own)
+            self._field = (own, localize._Field(g, g['res']))
+        field = self._field[1]
+        for _ in range(min(REANCHOR_PER_STEP, len(seqs))):
+            self.anchor_i = (self.anchor_i + 1) % len(seqs)
+            f = mine[seqs[self.anchor_i]]
+            pts = localize.scan_points(f['r'].astype(float) / 1000.0, f['amin'], f['inc'], f['mount'],
+                                       n=REANCHOR_POINTS)
+            if len(pts) < 30:
+                continue
+            pose, _ = localize._climb(field, pts, f['pose'])
+            inl, _ = localize.check(field, pts, pose)
+            d = math.hypot(pose[0] - f['pose'][0], pose[1] - f['pose'][1])
+            dyaw = math.degrees(abs((pose[2] - f['pose'][2] + math.pi) % (2 * math.pi) - math.pi))
+            if inl < REANCHOR_INLIERS or d > REANCHOR_MAX_M or (d < REANCHOR_M and dyaw < REANCHOR_DEG):
+                continue
+            with self.lock:
+                self.rev += 1
+                g = dict(f)
+                g['pose'] = json.loads(json.dumps([float(v) for v in pose]))
+                g['rev'] = self.rev
+                mine[f['seq']] = g
+                self.reanchored += 1
 
     # ---- who leads, and the transforms -----------------------------------------------------
     def state_json(self):
@@ -233,16 +288,17 @@ class SharedMap:
                 cars.append(p['car'])
         for car in cars:
             try:
-                have = self.frames.get(car, {})
-                d = json.loads(self.peers.get(car, '/api/shared/frames', timeout=5.0,
-                                              since=max(have) if have else 0))
-                new = [decode_frame(f) for f in d['frames']]
+                d = json.loads(self.peers.get(car, '/api/shared/frames', timeout=5.0, since=self.got.get(car, 0)))
                 with self.lock:
+                    if d.get('session') != self.sessions.get(car):      # that car started a new run
+                        self.sessions[car] = d.get('session')
+                        self.frames.pop(car, None)
+                        self.got[car] = 0
+                        continue                                      # fetch from the start next time
                     fs = self.frames.setdefault(car, {})
-                    if have and new and min(f['seq'] for f in new) == 1:   # that car started a new run
-                        fs.clear()
-                    for f in new:
+                    for f in map(decode_frame, d['frames']):
                         fs[f['seq']] = f
+                        self.got[car] = max(self.got.get(car, 0), f['rev'])
             except Exception as exc:
                 self.log.debug(f'shared map: frames of {car}: {exc}')
         leader = min([self.me] + [m.car for m in self.team.matched()]) if self.team else self.me
@@ -260,17 +316,22 @@ class SharedMap:
         with self.lock:
             frames = {c: dict(fs) for c, fs in self.frames.items() if c in T}
         rebuild = leader != self.leader or any(c not in self.T_used or self.T_used[c] != T[c] for c in T) \
-            or any(c not in T for c in self.T_used)
+            or any(c not in T for c in self.T_used) \
+            or any(s not in frames.get(c, {}) for c, s in self.added)       # a car started over
         if rebuild:
-            grid, added = Grid(), set()
+            grid, added = Grid(), {}
         else:
-            grid, added = self.grid, self.added
-        new = [(c, s) for c, fs in frames.items() for s in sorted(fs) if (c, s) not in added]
-        if not new and not rebuild:
+            grid, added = self.grid, dict(self.added)
+        todo = [(c, s) for c, fs in frames.items() for s in sorted(fs)
+                if added.get((c, s)) != tuple(fs[s]['pose'])]
+        if not todo and not rebuild:
             return
-        for c, s in new:
-            grid.add(frames[c][s], T[c])
-            added.add((c, s))
+        for c, s in todo:
+            f = frames[c][s]
+            if (c, s) in added:                     # re-anchored: take the old contribution out
+                grid.add(dict(f, pose=list(added[(c, s)])), T[c], sign=-1)
+            grid.add(f, T[c])
+            added[(c, s)] = tuple(f['pose'])
         out = grid.to_grid()
         with self.lock:
             self.grid, self.added, self.T_used, self.leader = grid, added, dict(T), leader
@@ -295,11 +356,13 @@ class SharedMap:
         if session != self.session:              # mapping (re)started or stopped: start over
             with self.lock:
                 self.frames, self.seq, self.last_key, self.T_pub, self.leader_state = {}, 0, None, {}, None
-                self.grid, self.added, self.T_used, self.out, self.leader = Grid(), set(), {}, None, self.me
+                self.grid, self.added, self.T_used, self.out, self.leader = Grid(), {}, {}, None, self.me
+                self.rev, self.got, self.sessions, self.reanchored = 0, {}, {}, 0
                 self.session = session
         if not running:
             return
         self.capture()
+        self.reanchor()
         if time.monotonic() - self.fetched_at >= FETCH_S:
             self.fetched_at = time.monotonic()
             self.fetch()
@@ -335,4 +398,4 @@ class SharedMap:
             if p['online'] and sh.get('hash') and p['car'] in used:
                 same[p['car']] = sh['hash'] == h
         return {'joined': len(used) > 1, 'leader': self.leader, 'cars': used, 'frames': counts,
-                'hash': h, 'same_as': same}
+                'hash': h, 'same_as': same, 'reanchored': self.reanchored}

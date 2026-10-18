@@ -29,6 +29,7 @@ ROT_STEP_DEG = 2.0
 TOP_K = 6
 CLASH_W = 0.5            # coarse search: weight of walls landing on the other map's open floor
 NEAR_M = 0.10            # a wall of b within this of a wall of a counts as agreeing
+SOFT_SIGMA = 0.04         # m, last refinement steps
 MIN_WALL_CELLS = 40
 MIN_AGREE = 0.80
 MAX_CLASH = 0.12
@@ -123,6 +124,19 @@ class _Scorer:
         n_seen = int(seen.sum())
         conf = agree.sum() / n_seen if n_seen else 0.0
         return float(agree.sum() - 2.0 * clash.sum()), float(conf), n_seen
+
+    def soft(self, pts):
+        """Smooth version of score() for the last refinement steps: walls count more the closer they land
+        (score() counts every wall within NEAR_M the same, so the fit could sit anywhere in that band)."""
+        c = np.floor((pts[:, 0] - self.a['origin'][0]) / self.a['res']).astype(int)
+        r = np.floor((pts[:, 1] - self.a['origin'][1]) / self.a['res']).astype(int)
+        h, w = self.a['data'].shape
+        ok = (r >= 0) & (r < h) & (c >= 0) & (c < w)
+        v = self.a['data'][r[ok], c[ok]]
+        d = self.dist[r[ok], c[ok]]
+        seen = v != UNK
+        clash = (v == FREE) & (d > 2 * NEAR_M)
+        return float(np.exp(-0.5 * (d[seen] / SOFT_SIGMA) ** 2).sum() - 2.0 * clash.sum())
 
 
 def quality(a, b, T):
@@ -229,6 +243,16 @@ def good_match(q):
             and q['shared_free_m2'] >= MIN_SHARED_FREE_M2 and q['spread_m'] >= MIN_SPREAD_M)
 
 
+def still_good(q):
+    """Is a match that was confirmed before still good? Like good_match() without the overlap share: cars
+    that started together and drove apart share only the start area, a shrinking part of their maps."""
+    if not q:
+        return False
+    return (min(q['ab']['agree'], q['ba']['agree']) >= MIN_AGREE
+            and max(q['ab']['clash'], q['ba']['clash']) <= MAX_CLASH
+            and q['shared_free_m2'] >= MIN_SHARED_FREE_M2 and q['spread_m'] >= MIN_SPREAD_M)
+
+
 def _refine(scorer, b_walls, T):
     x, y, yaw = T
     s, conf, _ = scorer.score(transform(b_walls, T))
@@ -242,6 +266,19 @@ def _refine(scorer, b_walls, T):
                 s2, c2, _ = scorer.score(transform(b_walls, T2))
                 if s2 > s:
                     x, y, yaw, s, conf, improved = *T2, s2, c2, True
+    # polish: pull the walls onto each other (smooth score), small steps
+    soft = scorer.soft(transform(b_walls, (x, y, yaw)))
+    for step_m, step_deg in ((0.025, 0.25), (0.0125, 0.125)):
+        improved = True
+        while improved:
+            improved = False
+            for dx, dy, dth in ((step_m, 0, 0), (-step_m, 0, 0), (0, step_m, 0), (0, -step_m, 0),
+                                (0, 0, step_deg), (0, 0, -step_deg)):
+                T2 = (x + dx, y + dy, yaw + math.radians(dth))
+                s2 = scorer.soft(transform(b_walls, T2))
+                if s2 > soft:
+                    x, y, yaw, soft, improved = *T2, s2, True
+    s, conf, _ = scorer.score(transform(b_walls, (x, y, yaw)))
     yaw = (yaw + math.pi) % (2 * math.pi) - math.pi
     return (x, y, yaw), s, conf
 

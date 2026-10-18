@@ -24,6 +24,7 @@ anywhere.
 | 6 | Cars avoid each other: each car's planner treats the other car as an obstacle, and a right-of-way rule when they meet | Done, drive-tested with both cars (crossing and head-on, from a tight start 40 cm apart) |
 | 7 | Map together: two cars explore one space at once, split the unexplored areas, merge into one map | Done, drive-tested (living room, 2.5 m limit: maps lined up within 10 s, team map in under 2 min) |
 | 7b | One shared map: the cars exchange lidar keyframes and build the same map, in one frame, on every car; navigation and exploration use it | Built; same map on both cars checked live (parked); drive test next |
+| 7c | Start together in a new place (no saved map): cars start near each other, line up, then split up; the match holds as they drift apart, keyframes follow each car's SLAM corrections | Built, simulated (16 × 10 m apartment, cars up to 14 m apart, with SLAM drift); drive test next |
 | 8 | Never drive off a drop (stairs, ledges): downward range sensors, no-go zones on the map | Open (needs sensors; camera sees no glossy floor) |
 | 9 | Later: AprilTag landmarks, traffic rules for shared corridors | Open |
 

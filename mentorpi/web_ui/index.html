@@ -293,7 +293,7 @@
         <option value="3">≤ 3 m</option><option value="5" selected>≤ 5 m</option><option value="8">≤ 8 m</option><option value="0">no limit</option>
       </select>
       <button class="btn" id="exploreStart" title="Map by itself: drive to the edges of the map until none are left, return, save">🧭 Explore</button>
-      <label class="slam-info" id="exploreTeamWrap" hidden title="Start (and stop) the other cars too: they map the same space together, splitting the unmapped edges. The cars can start anywhere."><input type="checkbox" id="exploreTeam"> together</label>
+      <label class="slam-info" id="exploreTeamWrap" hidden title="Start (and stop) the other cars too: they map the same space together, splitting the unmapped edges. Start them near each other (they see the same walls): they map in place until their maps line up, then split up."><input type="checkbox" id="exploreTeam"> together</label>
       <button class="btn" id="exploreStop">Stop exploring</button>
       <span class="slam-info" id="slamMsg"></span>
     </div>

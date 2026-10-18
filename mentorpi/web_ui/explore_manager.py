@@ -70,6 +70,7 @@ ESCAPE_MAX = 3           # escapes in a row without any goal succeeding -> stop 
 RETRACE_M = 0.8          # m to drive back along the car's own trail (known to fit) before replanning
 RETRACE_LOOKAHEAD = 0.30 # m, pure pursuit on the trail
 MIN_TURN_R = 0.40        # m, tightest turn of the car
+JOIN_WAIT_S = 30.0       # s that cars started together wait for their maps to line up before driving
 CLAIM_R = 1.0            # m, frontiers this close to another car's goal are left to it
 SHARE_COST = 1.0         # extra cost per m that a frontier is closer to another car than to this one
 SCAN_TOPIC = '/scan_raw'  # lidar_frame = base_footprint orientation (0 = forward, counter-clockwise)
@@ -216,8 +217,9 @@ class Explorer:
         return self.state in ('starting', 'exploring', 'returning')
 
     # ---- control --------------------------------------------------------------
-    def start(self, radius, dry=False):
-        """dry: everything except sending goals (test without driving; API only)."""
+    def start(self, radius, dry=False, wait_join=False):
+        """dry: everything except sending goals (test without driving; API only). wait_join: started
+        together with other cars: map in place until the shared map has joined (JOIN_WAIT_S at most)."""
         with self.lock:
             if self.active():
                 return False, 'already exploring'
@@ -232,6 +234,7 @@ class Explorer:
                 self.slam.start()
             self.radius = radius or None
             self.dry = dry
+            self.wait_join, self.ready_at = wait_join, None
             self.home = None
             self.goal, self.frontiers, self.cells = None, [], []
             self.blacklist, self.visited, self.failed_centers = [], [], []
@@ -455,8 +458,16 @@ class Explorer:
                 if now - self.started_at > START_TIMEOUT:
                     return self.stop('navigation did not start')
                 return
+            if self.wait_join and not self._joined():
+                self.ready_at = self.ready_at or now
+                if now - self.ready_at < JOIN_WAIT_S:
+                    self.message = (f'waiting for the other car\'s map to line up '
+                                    f'({JOIN_WAIT_S - (now - self.ready_at):.0f} s)')
+                    return
             self.home = list(self.slam.pose)
-            self.state, self.message = 'exploring', 'exploring'
+            self.state = 'exploring'
+            self.message = ('exploring' if not self.wait_join or self._joined()
+                            else 'exploring alone until the maps line up')
             return
 
         if not self.nav.running():
@@ -621,6 +632,10 @@ class Explorer:
                 self.nav.cancel(f'{cl["car"]} is mapping there, next one')
                 self.goal = None
                 return
+
+    def _joined(self):
+        sh = self.team.shared if self.team is not None else None
+        return sh is not None and sh.joined()
 
     def _claims(self):
         if self.team is None or not self.team.matched():
