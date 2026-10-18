@@ -125,6 +125,7 @@ Manual start without systemd (in this order):
 │   ├── fleet.py             cars avoid each other: costmap marks + right of way
 │   ├── map_merge.py         line up two maps of the same place and merge them
 │   ├── team.py              mapping together: live maps lined up, frontiers split
+│   ├── shared_map.py        the shared map: keyframes exchanged, same map on every car
 │   ├── localize.py          find the car on a saved map from one lidar scan
 │   ├── explore_manager.py   autonomous mapping (frontier exploration)
 │   ├── depth_obstacles.py   depth camera obstacles (/depth/scan) + comparison with the lidar
@@ -528,6 +529,34 @@ Drive test (both cars in the living room ~1 m apart, 2.5 m limit, started togeth
 the live maps lined up within 5–10 s (agree 0.95–0.97, kept all the way), jpi2 finished first (18 m²:
 the rest within its limit was already mapped by jpi1), jpi1 went on to 25.7 m², and the team map
 (`team_…`) has no doubled walls. 1 min 45 s from start to the saved team map.
+
+#### The shared map (`web_ui/shared_map.py`)
+
+One map that the mapping cars build together and that is the same, cell for cell, on every car:
+
+1. **Keyframes:** every 20 cm driven or 10° turned, a car stores one lidar scan with its SLAM pose
+   (ranges in mm, ~1 kB). The other cars fetch them every second (`GET /api/shared/frames?since=N`), so
+   every car ends up with the same keyframes of all cars.
+2. **One frame:** the map is in the SLAM frame of the leader, the car whose name sorts first among the
+   cars whose maps are lined up. The leader also decides where each other car's frame sits in its own
+   (its match from the live maps above; `GET /api/shared/state`), and every car uses the leader's
+   numbers. It publishes a new estimate only when it moved ≥ 3 cm or 0.5°.
+3. **Same map everywhere:** each car adds all keyframes up on an occupancy grid with integer log-odds
+   (a lidar hit +9, a ray passing through −4; occupied from +5, free from −4). Integer sums don't depend
+   on the order keyframes arrive in, so cars with the same keyframes and transforms hold the same map.
+   Each car reports a hash of its map; the page shows "same as jpi2 ✓" (or "syncing…").
+4. **Drift:** when the leader's estimate of a car's frame moves, every car rebuilds the map from all
+   keyframes (5 ms per keyframe on the Pi).
+
+The page shows the shared map in the shared frame, so both cars' pages show the same picture, with this
+car in red and the other in blue. Nav2 plans on it and the explorer picks its frontiers from it
+(`/team/map`, in each car's own frame). Before the maps are lined up, each car maps on its own.
+Not yet: corrections this car's SLAM makes later (loop closure) don't move keyframes stored before.
+
+Tests: `tests/run.sh test_shared.py`. Two simulated cars drive the living-room map in their own frames.
+Result: same map on both, walls agree 1.00 with the real room, independent of keyframe order, rebuilt
+the same way after a new transform. Live, with both cars parked: joined within ~15 s, same hash on both
+pages.
 
 How well maps line up, from tests that split one real map into two halves (one rotated into its own
 frame):
