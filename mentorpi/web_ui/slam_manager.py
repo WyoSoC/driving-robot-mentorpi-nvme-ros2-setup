@@ -49,6 +49,7 @@ class SlamManager:
         self.last_render = 0.0
         self.pending_map = None
         self.team_map = None     # shown instead of the own map while mapping together
+        self.view = None         # [x, y, yaw]: this car's frame -> the frame of the map shown (shared map)
         self.grid = None
         self.pose = None             # x, y, yaw in map frame
         self.path = []
@@ -112,10 +113,11 @@ class SlamManager:
             self.pending_map = msg
         self.grid = msg          # latest raw map (exploration)
 
-    def show_team_map(self, msg):
+    def show_team_map(self, msg, view=None):
         """Show the team map (team.py: this car's map + the other cars', in this car's frame) instead of
         this car's own; None = own map again."""
         self.team_map = msg
+        self.view = list(view) if msg is not None and view is not None else None
         self.pending_map = msg if msg is not None else self.grid
 
     def render_pending(self):
@@ -216,6 +218,7 @@ class SlamManager:
             'uptime_s': round(time.time() - self.started_at) if self.running() else None,
             'map': self.meta,
             'pose': self.pose,
+            'view': self.view,
             'path_len': len(self.path),
             'path': self.path[since_path:] if since_path <= len(self.path) else self.path,
             'maps': self.saved_maps(),

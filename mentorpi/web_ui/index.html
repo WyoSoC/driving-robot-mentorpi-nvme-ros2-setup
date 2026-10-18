@@ -1065,7 +1065,11 @@ function drawSlam() {
   const ox = (w - img.width * s) / 2, oy = (h - img.height * s) / 2;
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(themedMap(img), ox, oy, img.width * s, img.height * s);
-  const toC = (x, y) => [ox + (x - m.origin[0]) / m.resolution * s, oy + (img.height - (y - m.origin[1]) / m.resolution) * s];
+  // the shared map is drawn in the shared frame (the leader's); this car's poses come in its own frame
+  const V = st.view, vc = V ? Math.cos(V[2]) : 1, vs = V ? Math.sin(V[2]) : 0, va = V ? V[2] : 0;
+  const toS = (x, y) => V ? [V[0] + vc * x - vs * y, V[1] + vs * x + vc * y] : [x, y];
+  const toC = (x0, y0) => { const [x, y] = toS(x0, y0);
+    return [ox + (x - m.origin[0]) / m.resolution * s, oy + (img.height - (y - m.origin[1]) / m.resolution) * s]; };
   if (slam.path.length > 1) {
     ctx.strokeStyle = '#3fb6ff'; ctx.lineWidth = 2; ctx.beginPath();
     slam.path.forEach((p, i) => { const [cx, cy] = toC(p[0], p[1]); i ? ctx.lineTo(cx, cy) : ctx.moveTo(cx, cy); });
@@ -1087,7 +1091,7 @@ function drawSlam() {
   }
   if (ex.goal && ex.active) {
     const [gx, gy] = toC(ex.goal[0], ex.goal[1]);
-    arrow(ctx, gx, gy, ex.goal[2], 11, '#3fb950', true);
+    arrow(ctx, gx, gy, ex.goal[2] + va, 11, '#3fb950', true);
   }
   for (const t of ex.team || []) {             // other cars mapping with this one, moved into this map
     const p = fleet.peers.find(q => q.car === t.car), nv = p && p.status && p.status.nav;
@@ -1096,14 +1100,14 @@ function drawSlam() {
     const mv = (x, y) => [tx + c * x - sn * y, ty + sn * x + c * y];
     if (nv.goal && ['active', 'sending', 'yielding'].includes(nv.goal_state)) {
       const [gx, gy] = toC(...mv(nv.goal[0], nv.goal[1]));
-      arrow(ctx, gx, gy, nv.goal[2] + ta, 9, '#58a6ff', true);
+      arrow(ctx, gx, gy, nv.goal[2] + ta + va, 9, '#58a6ff', true);
     }
     const [cx, cy] = toC(...mv(nv.pose[0], nv.pose[1]));
-    arrow(ctx, cx, cy, nv.pose[2] + ta, 10, '#58a6ff');
+    arrow(ctx, cx, cy, nv.pose[2] + ta + va, 10, '#58a6ff');
     ctx.fillStyle = '#58a6ff'; ctx.font = '11px system-ui'; ctx.fillText(t.car, cx + 12, cy - 8);
   }
   if (st.pose) {
-    const [cx, cy] = toC(st.pose[0], st.pose[1]), a = -st.pose[2], r = 9;
+    const [cx, cy] = toC(st.pose[0], st.pose[1]), a = -(st.pose[2] + va), r = 9;
     ctx.fillStyle = '#f85149'; ctx.beginPath();
     ctx.moveTo(cx + r * Math.cos(a), cy + r * Math.sin(a));
     ctx.lineTo(cx + r * Math.cos(a + 2.5), cy + r * Math.sin(a + 2.5));

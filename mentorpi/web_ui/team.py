@@ -298,7 +298,13 @@ class Team:
             msg, self.team_msg = own, None
         if self.map_pub is not None:
             self.map_pub.publish(msg)
-        self.slam.show_team_map(self.team_msg)
+        if g is not None:     # the page shows the shared map in the shared frame: the same picture on every car
+            shown, _ = sh.shared_grid()
+            view = sh.T_used.get(self.me)
+            self.slam.show_team_map(grid_to_msg(shown, msg.header.stamp) if shown is not None else msg,
+                                    view if shown is not None else None)
+        else:
+            self.slam.show_team_map(self.team_msg)
 
     def claims(self):
         """[{car, pose: [x, y], goal: [x, y] or None}] of matched cars, in this car's frame."""
