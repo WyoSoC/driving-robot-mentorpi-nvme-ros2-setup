@@ -1,4 +1,5 @@
-"""Mapping together (runs inside web_ui_server.py): two cars exploring one space at once.
+"""Mapping together (runs inside web_ui_server.py): two cars exploring one space at once, building one
+team map between them.
 
 Each car runs its own SLAM, so each live map has its own frame. While this car maps, every TEAM_S it
 fetches every other mapping car's live map (GET /api/slam/grid on that car) and lines it up with its own
@@ -6,9 +7,15 @@ fetches every other mapping car's live map (GET /api/slam/grid on that car) and 
 two checks in a row agree (within STABLE_M / STABLE_DEG), so a one-off wrong fit early on, when the maps
 are small, is never used.
 
+The team map: this car's live map with every matched car's map filling in what this car hasn't seen
+(map_merge.fill: this car's own map wins where it has seen, so the other car's stale view, or this car
+parked at the start in the other's map, doesn't stay as an obstacle). Rebuilt every PUBLISH_S when
+anything changed and published as /team/map (OccupancyGrid, frame map = this car's SLAM frame; without a
+match it is just this car's map). Nav2 plans on it while exploring (nav.launch.py slam:=true), the
+explorer picks its frontiers from it, and the page shows it. So each car can drive into the part the
+other car mapped, and both see the same unmapped edges.
+
 With a match, for the explorer (explore_manager.py):
-- covered(): the cells of this car's map that are unmapped here but mapped by the other car. A frontier
-  that only leads there is not worth driving to.
 - claims(): where the other car is and the frontier it is driving to, in this car's frame. Frontiers
   near its goal are left to it, and frontiers closer to it than to this car cost more.
 For fleet.py: to_mine(car) gives the transform from the other car's frame into this car's, so the other
@@ -31,10 +38,13 @@ import time
 import urllib.request
 
 import numpy as np
+from nav_msgs.msg import OccupancyGrid
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 
 import map_merge
 
-TEAM_S = 10.0            # s between live map checks
+TEAM_S = 5.0             # s between live map checks
+PUBLISH_S = 1.0          # s between team map rebuilds (only when something changed)
 FETCH_TIMEOUT = 5.0
 STABLE_M = 0.30          # two alignments within this (and STABLE_DEG) = a match to use
 STABLE_DEG = 8.0
@@ -67,6 +77,21 @@ def grid_from_msg(msg):
     data[g >= 65] = map_merge.OCC
     o = msg.info.origin.position
     return {'data': data, 'res': float(msg.info.resolution), 'origin': [float(o.x), float(o.y)]}
+
+
+def grid_to_msg(grid, stamp):
+    """map_merge grid -> nav_msgs/OccupancyGrid (frame map)."""
+    msg = OccupancyGrid()
+    msg.header.frame_id, msg.header.stamp = 'map', stamp
+    h, w = grid['data'].shape
+    msg.info.resolution, msg.info.width, msg.info.height = float(grid['res']), w, h
+    msg.info.origin.position.x, msg.info.origin.position.y = grid['origin']
+    msg.info.origin.orientation.w = 1.0
+    d = np.full((h, w), -1, np.int8)
+    d[grid['data'] == map_merge.FREE] = 0
+    d[grid['data'] == map_merge.OCC] = 100
+    msg.data = d.ravel().tolist()
+    return msg
 
 
 def encode_grid(grid):
@@ -108,7 +133,12 @@ class Team:
         self.lock = threading.Lock()
         self._grid_cache = (None, None)   # (map version, encoded)
         self.pool = None
+        self.team_msg = None       # last team map (with at least one matched car), else None
+        self._pub_key = None
+        qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL, reliability=ReliabilityPolicy.RELIABLE)
+        self.map_pub = node.create_publisher(OccupancyGrid, '/team/map', qos) if hasattr(node, 'create_publisher') else None
         threading.Thread(target=self._loop, daemon=True).start()
+        threading.Thread(target=self._publish_loop, daemon=True).start()
 
     def _run(self, mine, other, start):
         if self.pool is None:
@@ -224,16 +254,42 @@ class Team:
         with self.lock:
             return [m for m in self.mates.values() if m.T is not None]
 
-    def covered(self, grid_shape, res, origin):
-        """bool mask over this car's grid: mapped (free or wall) by a matched other car."""
-        out = np.zeros(grid_shape, bool)
-        h, w = grid_shape
-        r, c = np.mgrid[0:h, 0:w]
-        xy = np.stack([origin[0] + (c.ravel() + 0.5) * res, origin[1] + (r.ravel() + 0.5) * res], axis=-1)
+    def team_grid(self, mine):
+        """This car's map (map_merge grid) with every matched car's map filling in the unseen cells."""
+        out = mine
         for m in self.matched():
-            v = map_merge.lookup(m.grid, map_merge.transform(xy, map_merge.invert(m.T)))
-            out |= (v != map_merge.UNK).reshape(h, w)
+            out = map_merge.fill(out, m.grid, m.T)
         return out
+
+    # ---- the team map: /team/map, for Nav2, the explorer and the page ---------------------
+    def _publish_loop(self):
+        while True:
+            time.sleep(PUBLISH_S)
+            try:
+                self.publish()
+            except Exception as exc:
+                self.log.warn(f'team map: {exc}')
+
+    def publish(self):
+        own = self.slam.grid
+        if own is None or not self.slam.running():
+            if self.team_msg is not None or self._pub_key is not None:
+                self.team_msg, self._pub_key = None, None
+                self.slam.show_team_map(None)
+            return
+        mates = self.matched()
+        key = (id(own),) + tuple((m.car, id(m.grid), tuple(m.T)) for m in mates)
+        if key == self._pub_key:
+            return
+        self._pub_key = key
+        if mates:
+            msg = grid_to_msg(self.team_grid(grid_from_msg(own)), self.node.get_clock().now().to_msg())
+            self.team_msg = msg
+        else:
+            msg, self.team_msg = own, None
+        if self.map_pub is not None:
+            self.map_pub.publish(msg)
+        self.slam.show_team_map(self.team_msg)
 
     def claims(self):
         """[{car, pose: [x, y], goal: [x, y] or None}] of matched cars, in this car's frame."""

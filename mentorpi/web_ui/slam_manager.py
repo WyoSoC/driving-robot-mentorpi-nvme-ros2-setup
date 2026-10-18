@@ -48,6 +48,7 @@ class SlamManager:
         self.version = 0
         self.last_render = 0.0
         self.pending_map = None
+        self.team_map = None     # shown instead of the own map while mapping together
         self.grid = None
         self.pose = None             # x, y, yaw in map frame
         self.path = []
@@ -79,6 +80,7 @@ class SlamManager:
             if self.running():
                 return 'already running'
             self.path, self.pose, self.png, self.meta, self.grid = [], None, None, None, None
+            self.team_map = None
             self.proc = subprocess.Popen(LAUNCH, cwd=MAPS_DIR, start_new_session=True,
                                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             self.started_at = time.time()
@@ -106,8 +108,15 @@ class SlamManager:
 
     # ---- map + pose ----------------------------------------------------------
     def on_map(self, msg):
-        self.pending_map = msg
+        if self.team_map is None:
+            self.pending_map = msg
         self.grid = msg          # latest raw map (exploration)
+
+    def show_team_map(self, msg):
+        """Show the team map (team.py: this car's map + the other cars', in this car's frame) instead of
+        this car's own; None = own map again."""
+        self.team_map = msg
+        self.pending_map = msg if msg is not None else self.grid
 
     def render_pending(self):
         msg = self.pending_map

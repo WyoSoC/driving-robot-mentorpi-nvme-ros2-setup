@@ -269,6 +269,21 @@ def merge(a, b, T):
     return out
 
 
+def fill(a, b, T):
+    """a with the cells it hasn't seen filled from b (put into a's frame with T). Unlike merge(), a wins
+    wherever it has seen: the other car's map is older there or may still hold this car as an obstacle."""
+    out = merge(a, b, T)
+    h, w = out['data'].shape
+    xy = cells_xy(out, np.ones((h, w), bool))
+    va = lookup(a, xy)
+    d = out['data'].reshape(-1)
+    seen = va != UNK
+    d[seen] = va[seen]
+    vb = lookup(b, transform(xy, invert(T)))
+    d[~seen] = vb[~seen]
+    return out
+
+
 def overlay_png(a, b, T):
     """Picture for checking: a's walls blue, b's walls (moved) red, both = purple, floor grey."""
     m = merge(a, b, T)

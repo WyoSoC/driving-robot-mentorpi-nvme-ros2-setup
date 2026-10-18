@@ -15,9 +15,10 @@ nothing; then its whole frontier is skipped. The car is "stuck" only when it nei
 anything for STUCK_S. Goals that need the car to turn around cost extra (TURN_COST), so it keeps going
 roughly the way it faces instead of hunting left and right.
 
-With another car mapping at the same time (team.py, once their live maps are lined up): edges whose
-unmapped side the other car has already mapped are not targets, frontiers near the other car's goal are
-left to it (CLAIM_R), frontiers nearer to it than to this car cost extra (SHARE_COST), and at the end the
+With another car mapping at the same time (team.py, once their live maps are lined up): frontiers are
+picked on the team map (this car's map + what the other car mapped), so both cars see the same unmapped
+edges and each can drive into the part the other mapped; frontiers near the other car's goal are left
+to it (CLAIM_R), frontiers nearer to it than to this car cost extra (SHARE_COST), and at the end the
 car whose name sorts first also saves the merged map (team_YYYYMMDD_HHMM).
 
 It stops (navigation stopped, SLAM kept so the map can be saved) on: Stop, the joystick or E-stop (they
@@ -69,15 +70,15 @@ ESCAPE_MAX = 3           # escapes in a row without any goal succeeding -> stop 
 RETRACE_M = 0.8          # m to drive back along the car's own trail (known to fit) before replanning
 RETRACE_LOOKAHEAD = 0.30 # m, pure pursuit on the trail
 MIN_TURN_R = 0.40        # m, tightest turn of the car
-CLAIM_R = 1.5            # m, frontiers this close to another car's goal are left to it
+CLAIM_R = 1.0            # m, frontiers this close to another car's goal are left to it
 SHARE_COST = 1.0         # extra cost per m that a frontier is closer to another car than to this one
 SCAN_TOPIC = '/scan_raw'  # lidar_frame = base_footprint orientation (0 = forward, counter-clockwise)
 
 
 def frontier_goals(grid, res, origin, car_xy, fence_xy, radius, blacklist, failed_centers=(), car_yaw=None,
-                   covered=None, claims=()):
+                   claims=()):
     """Frontier clusters and a goal for each. grid: int8 [h, w] (-1 unknown, 0..100), row 0 = min y.
-    covered: bool [h, w], unmapped here but mapped by another car (not worth exploring); claims: other
+    grid is the team map when mapping together (team.py). claims: other
     cars [{'pose': [x, y], 'goal': [x, y] or None}] in this frame.
     Returns ([{'goal': [x, y, yaw], 'center': [x, y], 'size': m, 'dist': m}], frontier cells [[x, y], ...])."""
     h, w = grid.shape
@@ -89,8 +90,7 @@ def frontier_goals(grid, res, origin, car_xy, fence_xy, radius, blacklist, faile
     unknown = ~free & ~occ & (grid < 0)
     to_xy = lambda r, c: (origin[0] + (c + 0.5) * res, origin[1] + (r + 0.5) * res)
     cross = ndimage.generate_binary_structure(2, 1)
-    todo = unknown if covered is None else unknown & ~covered
-    frontier = free & ndimage.binary_dilation(todo, structure=cross)
+    frontier = free & ndimage.binary_dilation(unknown, structure=cross)
 
     d_occ = ndimage.distance_transform_edt(~occ) * res
     d_unk = ndimage.distance_transform_edt(~unknown) * res
@@ -410,13 +410,17 @@ class Explorer:
         return moved > 0.05
 
     def _known_m2(self):
-        g = self._grid()
+        g = self._grid(own=True)
         if g is None:
             return 0.0
         return float(np.count_nonzero(g[0] >= 0)) * g[1] * g[1]
 
-    def _grid(self):
+    def _grid(self, own=False):
+        """The team map (team.py: this car's map + what the other cars mapped), or this car's own map.
+        Own progress (mapped m2) is measured on the own map."""
         msg = self.slam.grid
+        if not own and self.team is not None and self.team.team_msg is not None:
+            msg = self.team.team_msg
         if msg is None:
             return None
         g = np.array(msg.data, dtype=np.int8).reshape(msg.info.height, msg.info.width)
@@ -529,10 +533,10 @@ class Explorer:
         if g is None or pose is None:
             return
         grid, res, origin = g
-        covered, claims = self._team_view(grid.shape, res, origin)
+        claims = self._claims()
         fronts, cells = frontier_goals(grid, res, origin, pose[:2], self.home[:2], self.radius,
                                        self.blacklist + self.visited, self.failed_centers,
-                                       car_yaw=pose[2], covered=covered, claims=claims)
+                                       car_yaw=pose[2], claims=claims)
         self.frontiers, self.cells = fronts, cells
         if not fronts:
             self.empty_checks += 1
@@ -597,10 +601,10 @@ class Explorer:
         if g is None or pose is None:
             return
         grid, res, origin = g
-        covered, claims = self._team_view(grid.shape, res, origin)
+        claims = self._claims()
         fronts, cells = frontier_goals(grid, res, origin, pose[:2], self.home[:2], self.radius,
                                        self.blacklist + self.visited, self.failed_centers,
-                                       car_yaw=pose[2], covered=covered)
+                                       car_yaw=pose[2])
         self.frontiers, self.cells = fronts, cells
         gx, gy = self.goal[0], self.goal[1]
         if not any(math.hypot(f['goal'][0] - gx, f['goal'][1] - gy) < 1.0 for f in fronts):
@@ -618,14 +622,14 @@ class Explorer:
                 self.goal = None
                 return
 
-    def _team_view(self, shape, res, origin):
+    def _claims(self):
         if self.team is None or not self.team.matched():
-            return None, ()
+            return ()
         try:
-            return self.team.covered(shape, res, origin), self.team.claims()
+            return self.team.claims()
         except Exception as exc:
-            self.log.warn(f'team view: {exc}')
-            return None, ()
+            self.log.warn(f'team claims: {exc}')
+            return ()
 
     def _save_team_map(self):
         """Merged map of all matched cars; saved by the car whose name sorts first."""

@@ -1,7 +1,7 @@
 """Mapping together without driving (tests/run.sh test_team.py): one real saved map is split into two
 overlapping halves, as two cars would have mapped them; the second half is put into its own frame
-(rotated + shifted, like that car's SLAM). Checks: the halves are lined up again, the explorer drops the
-edge the other car has already mapped, claimed frontiers are left to the other car, and fleet.py sees the
+(rotated + shifted, like that car's SLAM). Checks: the halves are lined up again, on the team map the
+explorer drops the edge the other car has already mapped and this car's own cells are kept, claimed frontiers are left to the other car, and fleet.py sees the
 other car in this car's frame."""
 import json, math, sys, types
 sys.path.insert(0, '/home/ubuntu/web_ui')
@@ -53,16 +53,24 @@ def main():
     freeA = mm.cells_xy(A, A['data'] == mm.FREE)
     car = freeA[np.argmin(np.abs(freeA[:, 0] - (mid - 1.0)) + np.abs(freeA[:, 1] - np.median(freeA[:, 1])))]
     alone, _ = em.frontier_goals(gridA, res, A['origin'], car, car, 0, [], car_yaw=0.0)
-    team = types.SimpleNamespace()
-    mate = tm.Mate('jpi2'); mate.grid, mate.T = B, T
-    t = tm.Team.__new__(tm.Team); t.mates = {'jpi2': mate}; t.lock = __import__('threading').Lock()
-    cov = t.covered(gridA.shape, res, A['origin'])
-    together, _ = em.frontier_goals(gridA, res, A['origin'], car, car, 0, [], car_yaw=0.0, covered=cov)
+    team_g = mm.fill(A, B, T)                                     # the team map in A's frame
+    gridT = to_int8(team_g)
+    together, _ = em.frontier_goals(gridT, res, team_g['origin'], car, car, 0, [], car_yaw=0.0)
     cut = lambda fs: [f for f in fs if abs(f['center'][0] - (mid + 0.5)) < 0.4]
-    print(f'2. frontiers on the cut edge: alone {len(cut(alone))}, with the other car\'s map {len(cut(together))};'
-          f' all frontiers: {len(alone)} -> {len(together)}')
-    assert len(cut(alone)) >= 1 and len(cut(together)) == 0
-
+    beyond = lambda fs: [f for f in fs if f['center'][0] > mid + 0.9]   # edges only B's map shows
+    print(f'2. frontiers on the cut edge: alone {len(cut(alone))}, on the team map {len(cut(together))};'
+          f' beyond the cut (only in the other car\'s map): alone {len(beyond(alone))}, team map {len(beyond(together))}')
+    full, _ = em.frontier_goals(to_int8(truth), res, truth['origin'], car, car, 0, [], car_yaw=0.0)
+    print(f'   whole original map: {len(cut(full))} on the cut edge (a real unmapped edge there)')
+    # edges left on the cut must be real ones (also in the whole map), not the seam between the two maps
+    real = lambda f: any(math.hypot(f['center'][0] - g['center'][0], f['center'][1] - g['center'][1]) < 0.6 for g in full)
+    assert len(cut(alone)) > len(cut(full)) and all(real(f) for f in cut(together)) and len(beyond(alone)) == 0
+    # the team map keeps A's own cells where A has seen (no stale obstacles from the other map)
+    same = mm.lookup(team_g, mm.cells_xy(A, A['data'] != mm.UNK)) == A['data'][A['data'] != mm.UNK]
+    assert same.all(), 'own cells kept'
+    # B's region is in the team map, so A can plan there
+    seenB = mm.transform(mm.cells_xy(B, B['data'] == mm.FREE), T)
+    print(f'   team map: other car\'s floor present {np.mean(mm.lookup(team_g, seenB) == mm.FREE):.0%}')
     # 3. claims: a frontier near the other car's goal is left to it
     if alone:
         f0 = alone[0]

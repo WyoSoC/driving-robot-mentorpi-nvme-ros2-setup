@@ -4,11 +4,15 @@ started and stopped by the web UI (web_ui/nav_manager.py).
   ros2 launch /home/ubuntu/nav/nav.launch.py map:=/home/ubuntu/maps/livingroom.yaml
   ros2 launch /home/ubuntu/nav/nav.launch.py slam:=true    # on the live map of a running slam_toolbox
                                                              # (exploration): no map_server, no AMCL
+With slam:=true the global costmap's map is /team/map (web_ui/team.py: this car's live map, plus what
+the other cars mapped once their maps are lined up), not slam_toolbox's /map.
 
 Velocity chain (see nav2_params.yaml): controller / behaviors -> /nav/cmd_vel_raw -> velocity_smoother
 -> /nav/cmd_vel_smoothed -> collision_monitor -> /nav/cmd_vel (the web server gates it to /cmd_vel).
 """
 import os
+
+import yaml
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction, SetEnvironmentVariable
@@ -23,7 +27,14 @@ RAW, SMOOTHED = '/nav/cmd_vel_raw', '/nav/cmd_vel_smoothed'
 def setup(context):
     map_yaml = LaunchConfiguration('map').perform(context)
     slam = LaunchConfiguration('slam').perform(context).lower() in ('true', '1')
-    common = dict(output='screen', parameters=[PARAMS], respawn=False)
+    params = PARAMS
+    if slam:   # plan on the team map (published by the web server, same frame as this car's SLAM)
+        p = yaml.safe_load(open(PARAMS))
+        p['global_costmap']['global_costmap']['ros__parameters']['static_layer']['map_topic'] = '/team/map'
+        params = '/tmp/nav2_params_team.yaml'
+        with open(params, 'w') as f:
+            yaml.safe_dump(p, f)
+    common = dict(output='screen', parameters=[params], respawn=False)
     localization = ['map_server', 'amcl']
     navigation = ['controller_server', 'planner_server', 'behavior_server', 'bt_navigator',
                   'velocity_smoother', 'collision_monitor']
