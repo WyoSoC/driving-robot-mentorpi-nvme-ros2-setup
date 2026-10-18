@@ -541,9 +541,12 @@ One map that the mapping cars build together and that is the same, cell for cell
    cars whose maps are lined up. The leader also decides where each other car's frame sits in its own
    (its match from the live maps above; `GET /api/shared/state`), and every car uses the leader's
    numbers. It publishes a new estimate only when it moved ≥ 3 cm or 0.5°.
-3. **Same map everywhere:** each car adds all keyframes up on an occupancy grid with integer log-odds
-   (a lidar hit +9, a ray passing through −4; occupied from +5, free from −4). Integer sums don't depend
-   on the order keyframes arrive in, so cars with the same keyframes and transforms hold the same map.
+3. **Same map everywhere:** each car adds all keyframes up on a grid that counts, per cell, the rays
+   that ended there and the rays that reached it, like slam_toolbox (Karto). A cell is a wall when at
+   least 30 % of the rays reaching it ended there: thin things the lidar hits now and then (chair legs)
+   stay, and a car that stood somewhere for a while fades once the others see through the place. The
+   counts are integers, so the result doesn't depend on the order keyframes arrive in, and cars with
+   the same keyframes and transforms hold the same map.
    Each car reports a hash of its map; the page shows "same as jpi2 ✓" (or "syncing…").
 4. **Drift between the cars:** when the leader's estimate of a car's frame moves, every car rebuilds the
    map from all keyframes (5 ms per keyframe on the Pi).
@@ -555,8 +558,13 @@ One map that the mapping cars build together and that is the same, cell for cell
    same on every car.
 
 The page shows the shared map in the shared frame, so both cars' pages show the same picture, with this
-car in red and the other in blue. Nav2 plans on it and the explorer picks its frontiers from it
-(`/team/map`, in each car's own frame). Before the maps are lined up, each car maps on its own.
+car in red and the other in blue; the merged map saved at the end is the shared map. For driving, each
+car uses its own SLAM map wherever it has seen, and the shared map only where it hasn't been
+(`/team/map`, in its own frame, at most every 3 s). Nav2 plans on that map and the explorer picks
+frontiers from it. The first drive test showed why. With the shared map everywhere, the other car's
+scans marked this car's own spot as a wall ("starting point in lethal space"). Thin furniture the
+shared map had cleared was still in the live lidar view, so the controller stopped again and again
+("collision ahead"), and the cars went back and forth. Before the maps are lined up, each car maps on its own.
 
 **Starting in a new place** (no saved map at all): put the cars near each other, so their first scans
 see the same walls; any direction, a few metres apart is fine. Tick **together** and start exploring.

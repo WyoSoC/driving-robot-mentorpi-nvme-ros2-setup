@@ -7,6 +7,8 @@ fetches every other mapping car's live map (GET /api/slam/grid on that car) and 
 two checks in a row agree (within STABLE_M / STABLE_DEG), so a one-off wrong fit early on, when the maps
 are small, is never used.
 
+Once the shared map (shared_map.py) has joined, the team map is this car's own SLAM map wherever it
+has seen, filled from the shared map elsewhere (published at most every PUBLISH_MIN_S); before that:
 The team map: this car's live map with every matched car's map filling in what this car hasn't seen
 (map_merge.fill: this car's own map wins where it has seen, so the other car's stale view, or this car
 parked at the start in the other's map, doesn't stay as an obstacle). Rebuilt every PUBLISH_S when
@@ -44,7 +46,8 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 import map_merge
 
 TEAM_S = 5.0             # s between live map checks
-PUBLISH_S = 1.0          # s between team map rebuilds (only when something changed)
+PUBLISH_S = 1.0          # s between checks for a new team map
+PUBLISH_MIN_S = 3.0      # ... but a new one at most this often (each one makes Nav2 replan)
 FETCH_TIMEOUT = 5.0
 STABLE_M = 0.30          # two alignments within this (and STABLE_DEG) = a match to use
 STABLE_DEG = 8.0
@@ -137,6 +140,7 @@ class Team:
         self.team_msg = None       # last team map (with at least one matched car), else None
         self.shared = None         # shared_map.SharedMap, set by the web server: the map the cars build together
         self._pub_key = None
+        self._pub_at = 0.0
         qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL, reliability=ReliabilityPolicy.RELIABLE)
         self.map_pub = node.create_publisher(OccupancyGrid, '/team/map', qos) if hasattr(node, 'create_publisher') else None
         threading.Thread(target=self._loop, daemon=True).start()
@@ -283,15 +287,19 @@ class Team:
         mates = self.matched()
         sh = self.shared
         if sh is not None and sh.joined():       # the shared map (shared_map.py), in this car's frame
-            key = ('shared', sh.version)
+            key = ('shared', sh.version, id(own))
         else:
             key = (id(own),) + tuple((m.car, id(m.grid), tuple(m.T)) for m in mates)
-        if key == self._pub_key:
+        if key == self._pub_key or (self._pub_key is not None and time.monotonic() - self._pub_at < PUBLISH_MIN_S):
             return
-        self._pub_key = key
+        self._pub_key, self._pub_at = key, time.monotonic()
         g = sh.grid_in_my_frame() if key[0] == 'shared' else None
         if g is not None:
-            msg = grid_to_msg(g, self.node.get_clock().now().to_msg())
+            # for Nav2 and the explorer: this car's own SLAM map wherever it has seen (the map it localizes
+            # on, matching what its lidar sees now: it never shows this car itself as an obstacle), the
+            # shared map only where this car hasn't been
+            nav_g = map_merge.fill(grid_from_msg(own), g, (0.0, 0.0, 0.0))
+            msg = grid_to_msg(nav_g, self.node.get_clock().now().to_msg())
             self.team_msg = msg
         elif mates:
             msg = grid_to_msg(self.team_grid(grid_from_msg(own)), self.node.get_clock().now().to_msg())

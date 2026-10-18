@@ -10,9 +10,11 @@ Each car still runs its own SLAM: that is how it knows where it is. On top of it
    the cars whose maps are lined up (team.py). The leader also decides how each other car's frame sits
    in its own (its team.py match, GET /api/shared/state); every car uses the leader's numbers. A car
    whose map isn't lined up yet maps on its own.
-3. Same map everywhere: each car adds up all keyframes in the leader's frame on an occupancy grid
-   (integer log-odds: a hit adds HIT, a ray passing through a cell adds MISS). Integer sums don't depend
-   on the order the keyframes arrived in, so cars with the same keyframes and the same transforms hold
+3. Same map everywhere: each car adds up all keyframes in the leader's frame on a grid that counts, per
+   cell, the rays that ended there (hits) and the rays that reached it (passes), like slam_toolbox
+   (Karto): a cell is a wall when at least OCC_PCT % of the rays reaching it ended there, so thin things
+   the lidar hits now and then (chair legs) stay, and a car that stood somewhere for a moment fades once
+   the others see through the place. Integer sums don't depend on the order the keyframes arrived in, so cars with the same keyframes and the same transforms hold
    the same map, cell for cell (status: hash of the map; the page shows whether the other car has the
    same).
 4. When the leader's estimate of a car's frame moves (it refines the match as the maps grow), the map is
@@ -45,8 +47,7 @@ KEY_DEG = 10.0             # ... or this far turned
 MAX_R = 6.0                # m of each ray used
 RES = 0.05
 CANVAS_M = 40.0            # the grid covers +-20 m around the leader's start
-HIT, MISS = 9, -4          # log-odds steps (x10): p(hit) ~0.7, p(miss) ~0.4
-OCC_L, FREE_L = 5, -4      # occupied from one hit, free from one miss (more evidence wins)
+OCC_PCT = 30               # a cell is a wall when >= this % of the rays reaching it ended there
 LOOP_S = 0.5
 FETCH_S = 1.0
 FETCH_MAX = 200            # keyframes per request
@@ -56,6 +57,7 @@ REANCHOR_PER_STEP = 4      # own keyframes fitted to the own SLAM map per step
 REANCHOR_M, REANCHOR_DEG = 0.03, 1.0   # fitted pose moved this much: update the keyframe
 REANCHOR_MAX_M = 0.6       # ... but not further (a fit that far off is a wrong fit)
 REANCHOR_INLIERS = 0.6     # share of the scan on walls of the own map for a fit to count
+REANCHOR_BETTER = 0.03     # ... and it must put this much more of the scan on walls than the old pose
 REANCHOR_POINTS = 180
 REANCHOR_AGE = 3           # newest keyframes are skipped (the SLAM map may not include them yet)
 
@@ -82,12 +84,13 @@ def make_frame(car, seq, pose, mount, ranges, amin, inc, rev=0):
 
 
 class Grid:
-    """Integer log-odds occupancy grid in the shared frame."""
+    """Hit / pass counting grid in the shared frame (integers: exact, order independent)."""
     def __init__(self):
         n = int(CANVAS_M / RES)
         self.n = n
         self.origin = (-CANVAS_M / 2, -CANVAS_M / 2)
-        self.L = np.zeros((n, n), np.int32)
+        self.H = np.zeros((n, n), np.int32)   # rays that ended in the cell
+        self.P = np.zeros((n, n), np.int32)   # rays that reached the cell (passed through or ended)
         self.steps = np.arange(0.0, MAX_R, RES / 2)
 
     def add(self, f, T, sign=1):
@@ -111,8 +114,9 @@ class Grid:
         hits = np.unique(self._cells(lx + c[hit] * r[hit], ly + s[hit] * r[hit]))
         free = np.setdiff1d(free, hits, assume_unique=True)
         free, hits = free[free >= 0], hits[hits >= 0]
-        self.L.flat[free] += sign * MISS
-        self.L.flat[hits] += sign * HIT
+        self.P.flat[free] += sign
+        self.P.flat[hits] += sign
+        self.H.flat[hits] += sign
 
     def _cells(self, x, y):
         c = np.floor((x - self.origin[0]) / RES).astype(np.int64)
@@ -122,16 +126,16 @@ class Grid:
 
     def to_grid(self):
         """map_merge grid (cropped to the mapped part) or None."""
-        known = (self.L >= OCC_L) | (self.L <= FREE_L)
+        known = self.P > 0
         if not known.any():
             return None
         rows, cols = np.nonzero(known)
         r0, r1 = max(rows.min() - 10, 0), min(rows.max() + 11, self.n)
         c0, c1 = max(cols.min() - 10, 0), min(cols.max() + 11, self.n)
-        L = self.L[r0:r1, c0:c1]
-        data = np.full(L.shape, map_merge.UNK, np.uint8)
-        data[L <= FREE_L] = map_merge.FREE
-        data[L >= OCC_L] = map_merge.OCC
+        H, P = self.H[r0:r1, c0:c1], self.P[r0:r1, c0:c1]
+        data = np.full(P.shape, map_merge.UNK, np.uint8)
+        data[P > 0] = map_merge.FREE
+        data[(H > 0) & (H * 100 >= OCC_PCT * P)] = map_merge.OCC
         return {'data': data, 'res': RES, 'origin': [self.origin[0] + c0 * RES, self.origin[1] + r0 * RES]}
 
 
@@ -237,6 +241,9 @@ class SharedMap:
                 continue
             pose, _ = localize._climb(field, pts, f['pose'])
             inl, _ = localize.check(field, pts, pose)
+            inl_old, _ = localize.check(field, pts, f['pose'])
+            if inl < inl_old + REANCHOR_BETTER:
+                continue
             d = math.hypot(pose[0] - f['pose'][0], pose[1] - f['pose'][1])
             dyaw = math.degrees(abs((pose[2] - f['pose'][2] + math.pi) % (2 * math.pi) - math.pi))
             if inl < REANCHOR_INLIERS or d > REANCHOR_MAX_M or (d < REANCHOR_M and dyaw < REANCHOR_DEG):
