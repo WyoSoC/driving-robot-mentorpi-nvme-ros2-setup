@@ -627,6 +627,36 @@ of jpi2's 85 plans included reversing, a third of the switches within 0.6 m of t
 
 Tests: `tests/run.sh test_lift.py`, `tests/run.sh test_tight.py`.
 
+**Stairs and ledges.** Two layers, both software, using the cars' existing sensors.
+
+1. **Depth camera** (`depth_obstacles.find_drops`). The camera is 11 cm high and looks straight ahead.
+   Its view reaches the floor about 23 cm past the bumper. Past an edge it can't see the floor right
+   behind the edge, but it sees the lower floor further on: past an edge 0.8 m away, a floor 17 cm lower
+   shows from about 1.9 m.
+   - **A drop is:** only while the floor plane was measured in the last 2 s, per 2° direction within
+     2.4 m: at least 6 points more than 6 cm below the floor, their heights within 4 cm of each other
+     (one flat lower floor, not scattered mirror images from a glossy floor), seen in 2 of 3 frames.
+   - **Marked:** from the last floor point seen in that direction (or where the ray crossed floor height)
+     out to the lower floor, as no-go marks: the same as bumps, kept for the run, Nav2's `bump_layer`.
+   - **Emergency:** a drop edge within 30 cm of the front bumper in the car's path while it drives
+     forward stops it and backs it out at once.
+   - **Limits:** `/depth/drops` is published and recorded. The camera looks forward only, and a glossy
+     floor gives no floor plane, so nothing is detected there.
+2. **IMU** (`lift_detector.py`): driving forward, the nose dips more than 12° below its normal
+   attitude for 0.1 s (about 3 cm under the front wheels; door thresholds stay below that). Reversing,
+   the same for the tail. Then the motors stop, the car backs out the other way, and the place is marked.
+   This is a last resort, and the only cover when reversing.
+
+Simulated (`tests/run.sh test_drops.py`): rays from the measured camera position with car 1's lens
+data, onto a floor ending at an edge.
+- An edge 0.80 m ahead is found at 0.80 m, with the lower floor from 1.97 m.
+- An edge at 35° to the car is found.
+- A flat floor, a 3 cm step down, and 25 scattered points below the floor are not drops.
+- An edge 20 cm past the bumper stops the car.
+- Tipping: `test_lift.py`.
+
+Not yet tried at real stairs.
+
 #### Run recordings (`web_ui/run_recorder.py`)
 
 Every autonomous mapping run is recorded, from the page, from another car, or a dry run, to find out

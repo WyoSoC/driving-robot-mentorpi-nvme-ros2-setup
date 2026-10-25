@@ -146,6 +146,8 @@ class WebBridge(Node):
         self.team.shared = self.shared
         self.stall = StallDetector(self, self.slam.tf, self.explorer, self.nav, self.slam)   # motors on, car still
         self.lift = LiftDetector(self, self.explorer, self.nav, self.slam, self.stall)       # picked up by hand
+        self.depth_obs.hazards = self.stall                  # drops seen by the depth camera -> no-go marks
+        self.depth_obs.on_drop_ahead = self.stall.drop_ahead
         self.recorder = RunRecorder(self, self.explorer, self.nav, self.slam, CAR_NAME, self.team)  # runs/
         self.merge_lock = threading.Lock()
         self.merge_cache = {}      # (hash a, hash b) -> align result

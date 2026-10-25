@@ -38,7 +38,7 @@ NAV_LOG = '/tmp/nav.log'
 TOPICS = ['/scan_raw', '/scan_nav', '/depth/scan', '/depth/bumps', '/odom', '/tf', '/tf_static',
           '/map', '/team/map', '/local_costmap/costmap', '/global_costmap/costmap',
           '/plan', '/received_global_plan', '/lookahead_point', '/lookahead_collision_arc',
-          '/nav/cmd_vel', '/cmd_vel', '/fleet/cloud', '/bump/cloud', '/imu']
+          '/nav/cmd_vel', '/cmd_vel', '/fleet/cloud', '/bump/cloud', '/imu', '/depth/drops']
 ANSI = re.compile(r'\x1b\[[0-9;]*m')
 NAV2_LINE = re.compile(r'\[(WARN|ERROR)\]\s*\[[0-9.]+\]\s*\[([^\]]+)\]:\s*(.*)')
 

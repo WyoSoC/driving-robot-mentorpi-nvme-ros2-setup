@@ -85,7 +85,9 @@ class StallDetector:
         self.log = node.get_logger()
         self.cmds = []             # (t, v) of /cmd_vel (what the motors get)
         self.scans = []            # (t, ranges) of /scan_raw
-        self.marks = []            # [x, y] in map frame
+        self.marks = []            # [x, y] in map frame (bumps, lifts, drops)
+        self.mark_cells = set()    # 3 cm cells already marked (no duplicates)
+        self.drop_at = 0.0
         self.session = None
         self.last_bump = 0.0
         self.bumps = 0
@@ -124,7 +126,7 @@ class StallDetector:
         session = (getattr(self.slam, 'started_at', None) if self.slam.running() else None,
                    self.nav.started_at if self.nav.running() else None)
         if session != self.session:          # a new mapping / navigation run: forget the old marks
-            self.session, self.marks = session, []
+            self.session, self.marks, self.mark_cells = session, [], set()
         now = time.monotonic()
         if now - self.last_bump < COOLDOWN_S or not self.in_mission():
             return
@@ -170,7 +172,38 @@ class StallDetector:
         for d in np.arange(near, far + 1e-6, MARK_STEP):
             x = g.FRONT + d if direction > 0 else g.BACK - d
             for y in np.arange(-half_w, half_w + 1e-6, MARK_STEP):
-                self.marks.append([tr.x + c * x - s * y, tr.y + s * x + c * y])
+                self._add([tr.x + c * x - s * y, tr.y + s * x + c * y])
+
+    def _add(self, p):
+        key = (round(p[0] / MARK_STEP), round(p[1] / MARK_STEP))
+        if key not in self.mark_cells:
+            self.mark_cells.add(key)
+            self.marks.append(p)
+
+    def add_marks_base(self, pts):
+        """No-go marks given in base_footprint (depth_obstacles.py: drops), stored in the map frame."""
+        try:
+            t = self.tf.lookup_transform('map', 'base_footprint', Time())
+        except Exception:
+            return
+        tr, q = t.transform.translation, t.transform.rotation
+        yaw = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
+        c, s = math.cos(yaw), math.sin(yaw)
+        for x, y in pts:
+            self._add([tr.x + c * x - s * y, tr.y + s * x + c * y])
+
+    def drop_ahead(self, note):
+        """depth_obstacles.py: a drop edge right in front. Stop and back out, but only while driving forward."""
+        now = time.monotonic()
+        with self.lock:
+            fwd = [v for t, v in self.cmds if now - t <= 0.5 and v > 0.02]
+        if not fwd or now - self.drop_at < COOLDOWN_S or not self.in_mission():
+            return
+        self.drop_at = self.last_bump = now
+        self.note = note
+        self.log.warn(f'drop: {note}')
+        self.node.cmd_pub.publish(Twist())
+        self.explorer.bumped(1, note)
 
     def publish(self):
         """The marks as a cloud in base_footprint (like fleet.py), for Nav2's bump_layer."""

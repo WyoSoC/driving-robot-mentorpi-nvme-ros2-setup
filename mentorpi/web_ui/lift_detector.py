@@ -20,6 +20,12 @@ When lifted:
    about to go somewhere it must not.
 When set down: slam_toolbox takes scans again (it finds its position by scan matching, as before), and the
 mission goes on.
+
+Tipping over an edge (stairs, a ledge): driving forward, the nose dips more than TIP_DEG below how the car
+normally sits for TIP_HOLD_S (reversing: the tail). That is a drop of ~3 cm under the front wheels (wheelbase
+14 cm); door thresholds (1-2 cm) stay below it. Then: motors off, back out the other way at once
+(explorer.bumped), the place ahead marked no-go. The depth camera (depth_obstacles.py) usually sees a drop
+long before; this is the last resort, and the only one when reversing.
 """
 import math
 import threading
@@ -39,6 +45,8 @@ STILL_GYRO = 0.15          # rad/s
 DOWN_HOLD_S = 3.0
 BASE_ALPHA = 0.01          # how fast the "standing on the floor" orientation is learned (per IMU message)
 HAZARD_NEAR, HAZARD_FAR, HAZARD_HALF_W = 0.05, 0.45, 0.15
+TIP_DEG = 12.0
+TIP_HOLD_S = 0.1
 G = 9.80665
 
 
@@ -54,6 +62,12 @@ def angle_deg(a, b):
     return math.degrees(math.acos(max(-1.0, min(1.0, dot / (na * nb)))))
 
 
+def pitch_deg(q):
+    """Nose up (+) / down (-) of the car's forward axis against the horizontal."""
+    x, y, z, w = q
+    return math.degrees(math.asin(max(-1.0, min(1.0, 2 * (x * z - w * y)))))
+
+
 def vertical_accel(q, acc):
     """Acceleration along the world's vertical (m/s^2, gravity included: ~g standing)."""
     x, y, z, w = q
@@ -66,13 +80,21 @@ class LiftState:
     def __init__(self):
         self.lifted = False
         self.base = None           # up vector while standing on the floor
-        self.tilt_since = self.jolt_since = self.level_since = None
+        self.tilt_since = self.jolt_since = self.level_since = self.tip_since = None
         self.tilt = 0.0
+        self.base_pitch = None
+        self.dpitch = 0.0
+        self.tip_armed = True
 
-    def update(self, t, q, acc, gyro):
+    def update(self, t, q, acc, gyro, driving=0):
+        """driving: +1 / -1 while the motors drive forward / backward (for tipping), else 0."""
         up = up_in_world(q)
         if self.base is None:
             self.base = up
+        pitch = pitch_deg(q)
+        if self.base_pitch is None:
+            self.base_pitch = pitch
+        self.dpitch = pitch - self.base_pitch
         self.tilt = angle_deg(up, self.base)
         az = vertical_accel(q, acc)
         jolt = abs(az - G) > JOLT_G * G
@@ -80,6 +102,14 @@ class LiftState:
         if not self.lifted:
             if self.tilt < LEVEL_DEG / 2 and not jolt:      # learn how it stands (slowly)
                 self.base = tuple(b + BASE_ALPHA * (u - b) for b, u in zip(self.base, up))
+                self.base_pitch += BASE_ALPHA * (pitch - self.base_pitch)
+            tipping = (driving > 0 and self.dpitch < -TIP_DEG) or (driving < 0 and self.dpitch > TIP_DEG)
+            if abs(self.dpitch) < LEVEL_DEG:
+                self.tip_armed = True                    # level again: a new tip may be reported
+            self.tip_since = (self.tip_since or t) if tipping and self.tip_armed else None
+            if self.tip_since and t - self.tip_since >= TIP_HOLD_S:
+                self.tip_since, self.tip_armed = None, False
+                return 'tip_front' if driving > 0 else 'tip_back'
             self.tilt_since = (self.tilt_since or t) if self.tilt > TILT_LIFT_DEG else None
             self.jolt_since = (self.jolt_since or t) if jolt else None
             if (self.tilt_since and t - self.tilt_since >= TILT_HOLD_S) or \
@@ -101,6 +131,7 @@ class LiftDetector:
         self.log = node.get_logger()
         self.state = LiftState()
         self.lifts = 0
+        self.tips = 0
         self.note = ''
         self.slam_paused = False
         self.slam_session = None
@@ -120,19 +151,33 @@ class LiftDetector:
 
     def on_imu(self, msg):
         o, a, g = msg.orientation, msg.linear_acceleration, msg.angular_velocity
-        ev = self.state.update(time.monotonic(), (o.x, o.y, o.z, o.w), (a.x, a.y, a.z), (g.x, g.y, g.z))
-        if ev == 'lifted':
+        ev = self.state.update(time.monotonic(), (o.x, o.y, o.z, o.w), (a.x, a.y, a.z), (g.x, g.y, g.z),
+                               driving=self._driving_direction(0.5))
+        if ev in ('tip_front', 'tip_back'):
+            threading.Thread(target=self._on_tip, args=(1 if ev == 'tip_front' else -1,), daemon=True).start()
+        elif ev == 'lifted':
             threading.Thread(target=self._on_lifted, daemon=True).start()
         elif ev == 'down':
             threading.Thread(target=self._on_down, daemon=True).start()
 
-    def _driving_direction(self):
-        """+1 / -1 if the motors drove forward / back in the last 2 s, else 0 (stall_detector's command log)."""
+    def _driving_direction(self, window=2.0):
+        """+1 / -1 if the motors drove forward / back in the last `window` s, else 0 (stall_detector's log)."""
         now = time.monotonic()
-        vs = [v for t, v in list(self.stall.cmds) if now - t <= 2.0 and abs(v) > 0.02]
+        vs = [v for t, v in list(self.stall.cmds) if now - t <= window and abs(v) > 0.02]
         if not vs:
             return 0
         return 1 if sum(vs) > 0 else -1
+
+    def _on_tip(self, direction):
+        self.tips += 1
+        where = 'nose' if direction > 0 else 'tail'
+        note = f'tipping over an edge ({where} {abs(self.state.dpitch):.0f} deg down)'
+        self.note = note
+        self.log.warn(f'lift: {note}: stop, back out')
+        self.node.cmd_pub.publish(Twist())
+        self.stall.mark_ahead(direction, 0.0, HAZARD_FAR, HAZARD_HALF_W)
+        self.stall.last_bump = time.monotonic()           # no "bump" for the same moment
+        self.explorer.bumped(direction, note)
 
     def _on_lifted(self):
         self.lifts += 1
@@ -174,4 +219,4 @@ class LiftDetector:
             self.log.info(f'lift: slam_toolbox {"paused" if pause else "takes scans again"}')
 
     def status(self):
-        return {'lifted': self.lifted, 'lifts': self.lifts, 'tilt_deg': round(self.state.tilt, 1), 'note': self.note}
+        return {'lifted': self.lifted, 'lifts': self.lifts, 'tips': self.tips, 'tilt_deg': round(self.state.tilt, 1), 'note': self.note}
