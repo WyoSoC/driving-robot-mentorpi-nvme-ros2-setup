@@ -1058,7 +1058,9 @@ ros.subscribe('/depth/compare', 'std_msgs/msg/String', msg => {
   const fs = c.floor || {};
   if (!fs.drops_checked)   // depth_obstacles.fit_floor: without a measured floor, no drop (stairs) check
     el.innerHTML += ` · <b class="warn-text">⚠ floor not measured${fs.why && fs.why.stage ? ': ' + esc(fs.why.stage) : ''}` +
-      ` — no stairs check</b>` + (fs.ok_pct != null ? ` (fitted in ${fs.ok_pct}% of the last 10 s)` : '');
+      ` — no stairs check</b>` + (fs.ok_pct != null ? ` (fitted in ${fs.ok_pct}% of the last 10 s` +
+      (fs.lower_half_depth_pct != null ? `; depth in ${fs.lower_half_depth_pct}% of the image's lower half` +
+       (fs.lower_half_depth_pct < 20 ? ': the camera barely sees this floor (shiny?)' : '') : '') + ')' : '');
   el.title = `Since start (${tot} direction samples): agree ${pct('both')}, camera only ${pct('camera')}, ` +
     `lidar only ${pct('lidar')}. Camera only = low things under the lidar plane; lidar only = things the camera ` +
     `misses (shiny, dark, thin, too close or too far).`;

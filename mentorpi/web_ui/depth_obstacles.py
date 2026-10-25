@@ -240,6 +240,7 @@ class DepthObstacles:
         self.floor = np.zeros(3)      # fitted floor plane a + b x + c y (smoothed)
         self.floor_seen = 0.0         # monotonic time the floor was last fitted
         self.floor_why = {}           # why the last fit failed (fit_floor)
+        self.lower_valid = None       # share of the image's lower half with depth (glossy floors give none)
         self.floor_hist = []          # last FLOOR_HIST frames: fitted or the failure stage
         self.on_frame = None          # run_recorder.py: called with each processed frame while recording
         self.bump_hist = []
@@ -309,7 +310,10 @@ class DepthObstacles:
             except Exception:
                 return
         d = np.frombuffer(msg.data, dtype=np.uint16).reshape(msg.height, msg.step // 2)[:, :msg.width]
-        d = d[::STEP, ::STEP].reshape(-1).astype(np.float32) * 0.001          # m along the optical axis
+        d = d[::STEP, ::STEP]
+        lower = d[d.shape[0] // 2:]                     # the image's lower half: mostly floor when it's open
+        self.lower_valid = float((lower > 0).mean())
+        d = d.reshape(-1).astype(np.float32) * 0.001                          # m along the optical axis
         ok = (d > MIN_RANGE) & (d < MAX_RANGE)
         p = (self.rays[ok] * d[ok, None]) @ self.R.T + self.t                 # points in base_footprint
         why = {}
@@ -427,6 +431,7 @@ class DepthObstacles:
                          'ok_pct': round(100 * self.floor_hist.count('ok') / len(self.floor_hist)) if self.floor_hist else None,
                          'why': self.floor_why or None,
                          'drops_checked': bool(self.floor_seen and now - self.floor_seen < DROP_FLOOR_S),
+                         'lower_half_depth_pct': round(self.lower_valid * 100) if self.lower_valid is not None else None,
                          'offset_cm': round(float(self.floor[0]) * 100, 1),
                          'pitch_deg': round(math.degrees(math.atan(self.floor[1])), 2),
                          'roll_deg': round(math.degrees(math.atan(self.floor[2])), 2)},
