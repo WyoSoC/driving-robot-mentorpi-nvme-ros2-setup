@@ -48,21 +48,46 @@ NEW_CFG = """      imu0_config: [false, false, false,
                     false, false, true,
                     false,  false, false]"""
 
+# Second patch (2026-10-25): measured forward speed from the lidar. The factory odom1 input (/odom_rf2o, as a
+# pose) was never published. It becomes /odom_lidar_speed (web_ui/lidar_odometry.py: rf2o's forward speed
+# averaged over 0.5 s, sigma 2 cm/s), fused as forward speed only, next to the commanded speed of /odom_raw
+# (which stays: it keeps a parked car at exactly 0, and is the fallback when the lidar speed is missing).
+MARK2 = "# mentorpi patch: forward speed from the lidar (/odom_lidar_speed)"
+OLD_ODOM1 = """      odom1: odom_rf2o
+      odom1_config: [true, true, false,
+                     false, false, true,
+                     false, false, false,
+                     false, false, false,
+                     false, false, false]
+      odom1_differential: false
+      odom1_relative: true"""
+NEW_ODOM1 = f"""      {MARK2}
+      odom1: odom_lidar_speed
+      odom1_config: [false, false, false,
+                     false, false, false,
+                     true, false, false,
+                     false, false, false,
+                     false, false, false]
+      odom1_differential: false
+      odom1_relative: false"""
+
 done = 0
 for path in FILES:
     try:
         src = open(path).read()
     except FileNotFoundError:
         continue
-    if MARK in src:
-        done += 1
-        continue
-    for old in (OLD_TOPIC, OLD_CFG, OLD_ODOM):
-        if src.count(old) != 1:
-            sys.exit(f"patch_ekf: factory ekf.yaml changed ({path}), cannot apply patch:\n{old}")
-    src = src.replace(OLD_TOPIC, NEW_TOPIC).replace(OLD_CFG, NEW_CFG).replace(OLD_ODOM, NEW_ODOM)
+    if MARK not in src:
+        for old in (OLD_TOPIC, OLD_CFG, OLD_ODOM):
+            if src.count(old) != 1:
+                sys.exit(f"patch_ekf: factory ekf.yaml changed ({path}), cannot apply patch:\n{old}")
+        src = src.replace(OLD_TOPIC, NEW_TOPIC).replace(OLD_CFG, NEW_CFG).replace(OLD_ODOM, NEW_ODOM)
+    if MARK2 not in src:
+        if src.count(OLD_ODOM1) != 1:
+            sys.exit(f"patch_ekf: factory odom1 block not found ({path}), cannot add the lidar speed")
+        src = src.replace(OLD_ODOM1, NEW_ODOM1)
     open(path, "w").write(src)
     done += 1
 if not done:
     sys.exit("patch_ekf: no ekf.yaml found")
-print(f"ekf patched ({done} files): heading from the gyro (/imu_corrected) only")
+print(f"ekf patched ({done} files): heading from the gyro (/imu_corrected) only, forward speed also from the lidar")

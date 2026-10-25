@@ -343,7 +343,8 @@ whole controller node (no IMU, battery or motors until bringup restarted).
 How odometry works here: the motors have encoders, but only the board uses them (speed loop);
 ROS gets no wheel feedback. `odom_publisher` integrates the *commanded* speed and steering into
 `/odom_raw` (made accurate by the speed map and steering calibration below). The EKF
-(`ekf_filter_node`) takes the speed from `/odom_raw` and the **turn rate from the gyro**
+(`ekf_filter_node`) takes the speed from `/odom_raw` (and, since 2026-10-25, the lidar's measured forward
+speed, below) and the **turn rate from the gyro**
 (`/imu_corrected`, bias removed at start-up); its output `/odom` is the web UI trail and SLAM's
 odometry. `system/patch_ekf.py` sets this up: the factory config used the heading of
 `imu_complementary_filter` (`/imu`), which swallows slow turns (it re-estimates the gyro bias
@@ -375,8 +376,26 @@ corrected pose, per 5 s:
 | path length (SLAM 53.6 m) | 55.9 m | 48.4 m |
 
 So it catches the car not moving when commanded to, and is a bit better while driving. It falls behind
-in distance (−10 %), and its output has gaps of over 0.5 s. A next step could fuse its speed into the EKF
-alongside the commanded speed.
+in distance (−10 %), and its output has gaps of over 0.5 s.
+
+**Fused into the EKF (forward speed only).** rf2o reports zero covariance and its speed is noisy per
+message (σ ≈ 4 cm/s while standing). So `lidar_odometry.py` republishes it as `/odom_lidar_speed`:
+- the forward speed averaged over 0.5 s (at least 3 messages), with σ = 2 cm/s;
+- nothing while the car is lifted, in the first 3 s after rf2o (re)starts, or after a gap.
+
+`system/patch_ekf.py` makes it the EKF's `odom1` (vx only), next to the commanded speed from
+`/odom_raw`. That stays: it holds a parked car at exactly 0, and it is the fallback when the lidar speed
+is missing. Turn rate stays the gyro's.
+
+σ was chosen by simulating that fusion on the replay against SLAM (5 s windows):
+
+| lidar σ | error while driving, median / 90 % | while really standing, 90 % | distance (SLAM 53.6 m) |
+|---|---|---|---|
+| not fused | 13.5 / 42.8 cm | 66.9 cm | 56.0 m |
+| 5 cm/s | 12.4 / 33.5 cm | 50.1 cm | 52.9 m |
+| 3 cm/s | 11.2 / 28.8 cm | 37.4 cm | 50.6 m |
+| **2 cm/s** | **10.5 / 26.2 cm** | **27.4 cm** | **49.0 m** |
+| 1 cm/s | 9.7 / 23.7 cm | 14.4 cm | 47.5 m |
 
 **Odometry panel:** green is `/odom`, purple is `/odom_lidar`, drawn from the same start point. The
 readout shows the lidar odometry's distance and how far apart the two ends are.
