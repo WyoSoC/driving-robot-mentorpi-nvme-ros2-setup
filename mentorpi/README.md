@@ -127,6 +127,7 @@ Manual start without systemd (in this order):
 │   ├── team.py              mapping together: live maps lined up, frontiers split
 │   ├── shared_map.py        the shared map: keyframes exchanged, same map on every car
 │   ├── localize.py          find the car on a saved map from one lidar scan
+│   ├── car_geometry.py      the car's measured shape and sensor positions (used everywhere)
 │   ├── explore_manager.py   autonomous mapping (frontier exploration)
 │   ├── depth_obstacles.py   depth camera obstacles (/depth/scan) + comparison with the lidar
 │   ├── map_store.py         saved maps + content hash (same map on two cars?)
@@ -401,6 +402,20 @@ over within 30 s (`peer_manager.py`).
 
 ## Transfer to another identical car
 
+
+### Car shape and sensor positions (`web_ui/car_geometry.py`)
+
+Measured on the car, from the centre of the lidar: the body is a rectangle reaching 12 cm forward, 10 cm
+back and 9 cm to each side. The top of the lidar is 16 cm above the floor. The front of the depth camera
+is 3 cm behind the front of the car, and its centre is 11 cm above the floor. In base_footprint (the
+lidar is 1 cm behind its origin) that is a 0.22 × 0.18 m body from x −0.11 to 0.11, with the camera at
+x 0.08. Used for:
+- Nav2's footprints and collision-monitor zones in `nav/nav2_params.yaml`, written out there and checked
+  by `tests/run.sh test_geometry.py`;
+- the camera position in `depth_obstacles.py`. The robot description had the camera 1.6 cm further back
+  and 1.1 cm higher; its direction still comes from TF;
+- the other car's body in `fleet.py`;
+- the bumper distances for the creep-out and escape moves (`nav_manager.py`, `explore_manager.py`).
 
 ### Navigation (Nav2)
 

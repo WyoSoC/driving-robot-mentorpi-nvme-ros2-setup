@@ -1,7 +1,7 @@
 """Obstacles from the depth camera, compared with (and added to) the lidar.
 
 Why: the lidar scans one flat plane 16 cm above the floor. Anything lower (a shoe, a cable bundle, a toy)
-or an overhang above it is invisible to it. The depth camera (Angstrong HP60C, 12 cm high, looking straight
+or an overhang above it is invisible to it. The depth camera (Angstrong HP60C, 11 cm high, looking straight
 ahead, 58 deg wide) sees a 3-D picture of what is in front of the car.
 
 What this does with a depth frame, at most RATE_HZ times a second (the camera sends ~12; 12 Hz of this
@@ -45,6 +45,8 @@ from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
 from sensor_msgs.msg import CameraInfo, Image, LaserScan
 from std_msgs.msg import String
+
+import car_geometry
 
 DEPTH_TOPIC = '/ascamera/camera_publisher/depth0/image_raw'
 INFO_TOPIC = '/ascamera/camera_publisher/depth0/camera_info'
@@ -148,7 +150,7 @@ HISTORY = 3              # frames for the median filter
 RATE_HZ = 5.0            # processed depth frames per second (0.18 m/s -> 4 cm between frames)
 AGREE_M = 0.15           # m: lidar and camera "agree" within this
 COMPARE_PERIOD = 0.5     # s
-LIDAR_X = -0.010         # lidar_frame origin in base_footprint (TF), same orientation
+LIDAR_X = car_geometry.LIDAR_X   # lidar_frame origin in base_footprint (TF), same orientation
 
 
 class DepthObstacles:
@@ -207,8 +209,11 @@ class DepthObstacles:
             [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
             [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
             [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]], dtype=np.float32)
-        self.t = np.array([tr.x, tr.y, tr.z], dtype=np.float32)
-        self.log.info(f'depth obstacles: camera at {np.round(self.t, 3).tolist()} m in {BASE}')
+        # direction from the robot description (TF), position as measured on the car (car_geometry.py:
+        # the description has the camera 1.6 cm further back and 1.1 cm higher)
+        self.t = np.array([car_geometry.CAMERA_X, tr.y, car_geometry.CAMERA_Z], dtype=np.float32)
+        self.log.info(f'depth obstacles: camera at {np.round(self.t, 3).tolist()} m in {BASE} '
+                      f'(TF said {[round(tr.x, 3), round(tr.y, 3), round(tr.z, 3)]})')
 
     # ---- per frame -----------------------------------------------------------------
     def on_lidar(self, msg):

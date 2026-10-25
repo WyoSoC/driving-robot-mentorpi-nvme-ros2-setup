@@ -25,13 +25,14 @@ import time
 import numpy as np
 from rclpy.time import Time
 
+import car_geometry
 import map_merge
 from sensor_msgs.msg import LaserScan, PointCloud2
 from sensor_msgs_py import point_cloud2
 
 RATE_HZ = 5
 MAX_AGE_S = 1.5            # older status of the other car -> ignored (offline)
-BODY = (0.13, -0.12, 0.09)  # front, back, half width of a car (m, base_footprint)
+BODY = (car_geometry.FRONT, car_geometry.BACK, car_geometry.HALF_WIDTH)  # a car (m, base_footprint)
 BODY_PAD = 0.03
 POINT_STEP = 0.04
 PEER_SPEED = 0.2           # m/s, the most another car drives (odom_publisher clamp)

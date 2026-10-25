@@ -36,6 +36,7 @@ from rclpy.action import ActionClient
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
 
+import car_geometry
 import localize
 import map_merge
 import map_store
@@ -52,7 +53,7 @@ NUDGE_M = 0.15             # tight start: creep this far, then try the goal agai
 NUDGE_SPEED = 0.06
 NUDGE_MAX = 2              # creeps per goal
 NUDGE_ROOM = 0.25          # m free needed past the bumper in that direction
-BUMPER = {0: 0.14, 180: 0.13}   # lidar centre -> front / rear bumper
+BUMPER = car_geometry.BUMPER   # lidar centre -> front / rear bumper
 
 
 def yaw_of(q):

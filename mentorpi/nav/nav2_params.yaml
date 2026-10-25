@@ -1,8 +1,8 @@
 # Nav2 for the MentorPi M1 (Ackermann: front steering, cannot turn on the spot), ROS 2 Humble.
 # Started by the web UI (web_ui/nav_manager.py -> nav/nav.launch.py) on a map saved with the Map panel.
 #
-# Car: base_footprint = centre between the axles; axles +0.067 / -0.070 m, track 0.14 m, body ~0.25 x
-# 0.18 m; lidar at x -0.01, 0.16 m up. Real top steering ~30 deg (servo reaches ~75% of command)
+# Car: base_footprint = centre between the axles; axles +0.067 / -0.070 m, track 0.14 m; body 0.22 x
+# 0.18 m (x -0.11 .. 0.11, measured: web_ui/car_geometry.py); lidar at x -0.01, 0.16 m up. Real top steering ~30 deg (servo reaches ~75% of command)
 # -> tightest turning radius ~0.25 m; plans use 0.40 m for margin and smooth driving.
 #
 # Command chain: controller_server / behavior_server -> /nav/cmd_vel_raw -> velocity_smoother
@@ -174,7 +174,7 @@ local_costmap:
       width: 3
       height: 3
       resolution: 0.05
-      footprint: "[[0.13, 0.09], [0.13, -0.09], [-0.12, -0.09], [-0.12, 0.09]]"
+      footprint: "[[0.11, 0.09], [0.11, -0.09], [-0.11, -0.09], [-0.11, 0.09]]"   # web_ui/car_geometry.py
       footprint_padding: 0.02
       plugins: ["obstacle_layer", "depth_layer", "fleet_layer", "inflation_layer"]
       obstacle_layer:
@@ -247,7 +247,7 @@ global_costmap:
       robot_base_frame: base_footprint
       resolution: 0.05
       track_unknown_space: true
-      footprint: "[[0.13, 0.09], [0.13, -0.09], [-0.12, -0.09], [-0.12, 0.09]]"
+      footprint: "[[0.11, 0.09], [0.11, -0.09], [-0.11, -0.09], [-0.11, 0.09]]"   # web_ui/car_geometry.py
       footprint_padding: 0.02
       plugins: ["static_layer", "obstacle_layer", "depth_layer", "fleet_layer", "inflation_layer"]
       static_layer:
@@ -393,9 +393,9 @@ collision_monitor:
     source_timeout: 2.0          # older data is ignored (1.0 dropped the camera during short stalls)
     stop_pub_timeout: 2.0
     polygons: ["StopZone", "FootprintApproach"]
-    StopZone:                    # anything just in front of the bumper (front at x = 0.13): stop.
+    StopZone:                    # anything just in front of the bumper (front at x = 0.11): stop.
       type: "polygon"            # Front only: Humble's zones ignore the driving direction, and a zone round
-      points: [0.20, 0.13, 0.20, -0.13, 0.12, -0.13, 0.12, 0.13]   # the whole car let a cable 5 cm
+      points: [0.18, 0.13, 0.18, -0.13, 0.10, -0.13, 0.10, 0.13]   # the whole car let a cable 5 cm
                                  # behind it block driving forward. FootprintApproach (simulated motion,
                                  # forward and reverse) guards the direction the car actually moves.
       action_type: "stop"
@@ -404,7 +404,7 @@ collision_monitor:
       polygon_pub_topic: "collision_stop_zone"
     FootprintApproach:           # slow down so the car never hits anything within 1.2 s, either direction
       type: "polygon"
-      points: [0.14, 0.10, 0.14, -0.10, -0.13, -0.10, -0.13, 0.10]
+      points: [0.12, 0.10, 0.12, -0.10, -0.12, -0.10, -0.12, 0.10]   # car (car_geometry.py) + 1 cm
       action_type: "approach"
       time_before_collision: 1.2
       simulation_time_step: 0.1

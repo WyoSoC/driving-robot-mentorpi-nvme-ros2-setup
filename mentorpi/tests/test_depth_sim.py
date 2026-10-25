@@ -4,7 +4,7 @@ sys.path.insert(0, '/home/ubuntu/web_ui')
 import depth_obstacles as do
 
 fx, fy, cx, cy, W, Hh = 572.8, 572.3, 336.4, 251.0, 640, 480
-t_cam = np.array([0.064, 0.012, 0.121])
+t_cam = np.array([0.080, 0.012, 0.110])   # measured (web_ui/car_geometry.py)
 def quat_R(x, y, z, w):
     return np.array([[1-2*(y*y+z*z), 2*(x*y-z*w), 2*(x*z+y*w)], [2*(x*y+z*w), 1-2*(x*x+z*z), 2*(y*z-x*w)], [2*(x*z-y*w), 2*(y*z+x*w), 1-2*(x*x+y*y)]])
 R_nom = quat_R(-0.5, 0.5, -0.5, 0.5)                    # optical -> base (from the car's TF)

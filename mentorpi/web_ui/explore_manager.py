@@ -33,6 +33,7 @@ from datetime import datetime
 import numpy as np
 from geometry_msgs.msg import Twist
 
+import car_geometry
 import map_merge
 import map_store
 from rclpy.qos import qos_profile_sensor_data
@@ -355,7 +356,8 @@ class Explorer:
             c, sn = math.cos(pose[2]), math.sin(pose[2])
             xr, yr = c * dx + sn * dy, -sn * dx + c * dy          # target in the car's frame
             v = -ESCAPE_SPEED if xr < 0 else ESCAPE_SPEED          # the trail is normally behind
-            direction, body = (180, 0.13) if v < 0 else (0, 0.14)
+            direction = 180 if v < 0 else 0
+            body = car_geometry.BUMPER[direction]
             if not self._drive_ok(direction, body):
                 break
             kappa = 2.0 * yr / max(xr * xr + yr * yr, 1e-6)
@@ -376,7 +378,7 @@ class Explorer:
     def _straight_out(self):
         """Drive straight back (or forward) ESCAPE_M if the lidar shows room."""
         back, front = self._clearance(180), self._clearance(0)
-        body = {180: 0.13, 0: 0.14}          # lidar centre -> rear / front bumper (this car)
+        body = car_geometry.BUMPER          # lidar centre -> front / rear bumper
         options = [(c - body[d], d) for c, d in ((back, 180), (front, 0)) if c is not None]
         options = [o for o in options if o[0] >= ESCAPE_CLEAR]
         if not options:
