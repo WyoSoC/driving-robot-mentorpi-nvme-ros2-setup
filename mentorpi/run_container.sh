@@ -77,6 +77,12 @@ docker exec -i -u ubuntu "${CONTAINER_NAME}" python3 - < "$DIR/system/patch_odom
 docker exec -i -u ubuntu "${CONTAINER_NAME}" python3 - < "$DIR/system/patch_ekf.py"
 # Gamepad node busy-waited at 100% CPU (system/patch_joystick.py).
 docker exec -i -u ubuntu "${CONTAINER_NAME}" python3 - < "$DIR/system/patch_joystick.py"
+# Audio (web_ui/audio.py): the web server's user may use the voice module (USB speaker + microphone), and
+# espeak-ng speaks typed text. Installed at every start (the container is recreated); without network it is
+# skipped and the page says so.
+docker exec -u root "${CONTAINER_NAME}" usermod -aG audio ubuntu
+docker exec -u root "${CONTAINER_NAME}" bash -c 'command -v espeak-ng >/dev/null || apt-get install -y -qq espeak-ng >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq espeak-ng) >/dev/null 2>&1' \
+    || echo "espeak-ng not installed (no network?): the car can't speak typed text"
 
 # rosbridge leak when a browser disconnects mid-setup (see system/patch_rosbridge.py).
 docker exec -i "${CONTAINER_NAME}" python3 - < "$DIR/system/patch_rosbridge.py"

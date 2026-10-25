@@ -79,6 +79,17 @@
   .gp-btn { display: inline-flex; align-items: center; gap: 4px; padding: 5px 8px; }
   .gp-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); opacity: .5; }
   .gp-dot.on { background: var(--ok); opacity: 1; }
+  .gp-dot.live { background: var(--bad); opacity: 1; }
+  .au-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .au-row input { flex: 1; min-width: 0; background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 8px; padding: 4px 8px; font: inherit; }
+  .au-meter { flex: 1; height: 8px; background: var(--panel-2); border-radius: 4px; overflow: hidden; min-width: 60px; }
+  .au-meter span { display: block; height: 100%; width: 0; background: var(--ok); transition: width .08s; }
+  .au-talk { user-select: none; touch-action: none; }
+  .au-talk.on { background: var(--bad); color: #fff; border-color: var(--bad); }
+  #auListen.on { background: var(--accent); color: #111; border-color: var(--accent); }
+  .au-vol { display: grid; grid-template-columns: 80px 1fr 36px; gap: 6px; align-items: center; }
+  .au-vol span { font-family: var(--mono); font-size: 11px; text-align: right; }
   .gp-menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; width: min(360px, calc(100vw - 32px));
     background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
     box-shadow: 0 8px 24px rgba(0,0,0,.25); font-size: 12px; line-height: 1.4; }
@@ -231,6 +242,25 @@
   <button class="btn" id="chargeBtn" aria-pressed="false">⚡ Charging mode: off</button>
   <span id="peerPills" style="display:contents"></span>
   <span class="spacer"></span>
+  <span class="gp-wrap au-wrap">
+    <button class="btn gp-btn" id="auBtn" aria-haspopup="true" aria-expanded="false" title="Audio: listen to the car, talk or let it speak">
+      <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M4 9h3.5L12 5v14l-4.5-4H4V9Zm11.5 3a3.5 3.5 0 0 0-2-3.2v6.4a3.5 3.5 0 0 0 2-3.2Zm-2-7.3v2.1a5.5 5.5 0 0 1 0 10.4v2.1a7.5 7.5 0 0 0 0-14.6Z"/></svg>
+      <span class="gp-dot" id="auDot"></span>
+    </button>
+    <div class="gp-menu" id="auMenu" hidden role="dialog" aria-label="Audio">
+      <div class="gp-status" id="auStatus">Voice module…</div>
+      <h3>Listen to the car</h3>
+      <div class="au-row"><button class="btn" id="auListen">🎧 Listen</button><span class="au-meter"><span id="auLevel"></span></span></div>
+      <p class="gp-note">Streams the car's microphone to this page (~0.3 s delay). A red dot on this icon shows when anyone listens; it is logged on the car.</p>
+      <h3>Talk through the car</h3>
+      <div class="au-row"><button class="btn au-talk" id="auTalk">🎙 Hold to talk</button><span class="gp-note" id="auTalkMsg"></span></div>
+      <h3>Let the car say</h3>
+      <div class="au-row"><input id="auText" maxlength="300" placeholder="Hello from the car"><button class="btn" id="auSay">Say</button></div>
+      <h3>Volume</h3>
+      <div class="au-vol"><label for="auSpk">Speaker</label><input type="range" id="auSpk" min="0" max="100" step="5"><span id="auSpkV"></span></div>
+      <div class="au-vol"><label for="auMic">Microphone</label><input type="range" id="auMic" min="0" max="100" step="5"><span id="auMicV"></span></div>
+    </div>
+  </span>
   <span class="gp-wrap">
     <button class="btn gp-btn" id="gpBtn" aria-haspopup="true" aria-expanded="false" title="Gamepad: connection and button map">
       <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M7.5 6h9A5.5 5.5 0 0 1 22 11.5v2.3a3.7 3.7 0 0 1-6.6 2.3L14.2 14.6H9.8l-1.2 1.5A3.7 3.7 0 0 1 2 13.8v-2.3A5.5 5.5 0 0 1 7.5 6Zm-.5 3v1.5H5.5v1.5H7v1.5h1.5V12H10v-1.5H8.5V9H7Zm9.25.25a1 1 0 1 0 0 2 1 1 0 0 0 0-2Zm-2 2a1 1 0 1 0 0 2 1 1 0 0 0 0-2Zm4 0a1 1 0 1 0 0 2 1 1 0 0 0 0-2Zm-2 2a1 1 0 1 0 0 2 1 1 0 0 0 0-2Z"/></svg>
@@ -423,8 +453,11 @@
 
 // ---------- Config ----------
 const HOST = location.hostname || 'localhost';
-const ROSBRIDGE_URL = `ws://${HOST}:9090`;
-const VIDEO_URL = `http://${HOST}:8080`;
+// Opened over https (Tailscale serve: https://<car>.<tailnet>.ts.net, see README "HTTPS"): the robot connection and
+// the video go through Tailscale's https proxies on 8443 / 8444 (a secure page may not open ws:// or http://).
+const SECURE = location.protocol === 'https:';
+const ROSBRIDGE_URL = SECURE ? `wss://${HOST}:8443` : `ws://${HOST}:9090`;
+const VIDEO_URL = SECURE ? `https://${HOST}:8444` : `http://${HOST}:8080`;
 const VIDEO_TOPICS = {
   rgb: '/ascamera/camera_publisher/rgb0/image',
   depth: '/web/depth_color',
@@ -742,6 +775,7 @@ $('gpBtn').onclick = e => {
   e.stopPropagation();
   const m = $('gpMenu'); m.hidden = !m.hidden;
   $('gpBtn').setAttribute('aria-expanded', String(!m.hidden));
+  if (!m.hidden) $('auMenu').hidden = true;
   gpStatus();
 };
 document.addEventListener('click', e => {
@@ -749,6 +783,135 @@ document.addEventListener('click', e => {
 });
 addEventListener('keydown', e => { if (e.key === 'Escape' && !$('gpMenu').hidden) { $('gpMenu').hidden = true; $('gpBtn').setAttribute('aria-expanded', 'false'); } });
 gpStatus();
+
+// ---------- Audio (audio.py: the car's voice module) ----------
+// Listen: the car's microphone as raw 16 kHz mono s16le over a streaming fetch, played with Web Audio.
+// Talk: this device's microphone (needs a secure page) cut into 0.2 s chunks of the same format, POSTed.
+// While talking, the car's microphone is not played here (it would echo).
+const au = { ctx: null, listening: false, abort: null, next: 0, talking: false, stream: null, proc: null,
+             pending: [], sendTimer: null, st: null };
+const AU_RATE = 16000;
+function auCtx() { if (!au.ctx) au.ctx = new (window.AudioContext || window.webkitAudioContext)(); au.ctx.resume(); return au.ctx; }
+async function auListen() {
+  if (au.listening) { au.abort && au.abort.abort(); return; }
+  const ctx = auCtx();
+  au.abort = new AbortController(); au.listening = true; auUi();
+  let rest = new Uint8Array(0);
+  try {
+    const r = await fetch('/api/audio/listen', { signal: au.abort.signal });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
+    const reader = r.body.getReader();
+    au.next = ctx.currentTime + 0.2;
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      const buf = new Uint8Array(rest.length + value.length); buf.set(rest); buf.set(value, rest.length);
+      const n = buf.length >> 1; rest = buf.slice(n * 2);
+      if (!n) continue;
+      const pcm = new Int16Array(buf.buffer, 0, n);
+      let sum = 0; const f = new Float32Array(n);
+      for (let i = 0; i < n; i++) { f[i] = pcm[i] / 32768; sum += f[i] * f[i]; }
+      $('auLevel').style.width = Math.min(100, Math.sqrt(sum / n) * 400) + '%';
+      if (au.talking) continue;                                   // half duplex: no echo
+      const now = ctx.currentTime;
+      if (au.next < now) au.next = now + 0.05;                     // fell behind: start again shortly
+      if (au.next > now + 0.6) continue;                           // too far ahead: drop (keeps the delay short)
+      const b = ctx.createBuffer(1, n, AU_RATE); b.copyToChannel(f, 0);
+      const src = ctx.createBufferSource(); src.buffer = b; src.connect(ctx.destination); src.start(au.next);
+      au.next += b.duration;
+    }
+  } catch (e) { if (e.name !== 'AbortError') log(`Listen: ${e.message || e}`); }
+  au.listening = false; $('auLevel').style.width = '0'; auUi();
+}
+async function auTalkStart() {
+  if (au.talking) return;
+  if (!isSecureContext || !navigator.mediaDevices) {
+    $('auTalkMsg').innerHTML = au.st && au.st.https_url
+      ? `Your microphone needs the secure page: <a href="${esc(au.st.https_url)}">${esc(au.st.https_url)}</a>`
+      : 'Your microphone needs a secure (https) page.';
+    return;
+  }
+  au.talking = true; auUi();
+  try {
+    au.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+  } catch (e) { au.talking = false; auUi(); $('auTalkMsg').textContent = `Microphone: ${e.message || e.name}`; return; }
+  if (!au.talking) { au.stream.getTracks().forEach(t => t.stop()); return; }   // released while asking
+  const ctx = auCtx(), src = ctx.createMediaStreamSource(au.stream);
+  au.proc = ctx.createScriptProcessor(4096, 1, 1);
+  const ratio = ctx.sampleRate / AU_RATE;
+  au.proc.onaudioprocess = e => {
+    const x = e.inputBuffer.getChannelData(0), n = Math.floor(x.length / ratio), out = new Int16Array(n);
+    for (let i = 0; i < n; i++) {                                  // average down to 16 kHz
+      let s = 0, a = Math.floor(i * ratio), b = Math.floor((i + 1) * ratio);
+      for (let j = a; j < b; j++) s += x[j];
+      out[i] = Math.max(-1, Math.min(1, s / (b - a))) * 32767;
+    }
+    au.pending.push(out);
+  };
+  src.connect(au.proc); au.proc.connect(ctx.destination);
+  au.sendTimer = setInterval(auSend, 200);
+  $('auTalkMsg').textContent = 'talking…';
+}
+function auSend() {
+  if (!au.pending.length) return;
+  const n = au.pending.reduce((a, c) => a + c.length, 0), all = new Int16Array(n);
+  let o = 0; for (const c of au.pending) { all.set(c, o); o += c.length; }
+  au.pending = [];
+  fetch('/api/audio/talk', { method: 'POST', body: all.buffer, headers: { 'Content-Type': 'application/octet-stream' } })
+    .then(r => r.json()).then(j => { if (!j.ok) $('auTalkMsg').textContent = j.message; }).catch(() => {});
+}
+function auTalkStop() {
+  if (!au.talking) return;
+  au.talking = false;
+  if (au.proc) { au.proc.disconnect(); au.proc.onaudioprocess = null; au.proc = null; }
+  if (au.stream) { au.stream.getTracks().forEach(t => t.stop()); au.stream = null; }
+  clearInterval(au.sendTimer); auSend();
+  if ($('auTalkMsg').textContent === 'talking…') $('auTalkMsg').textContent = '';
+  auUi();
+}
+function auUi() {
+  $('auListen').classList.toggle('on', au.listening);
+  $('auListen').textContent = au.listening ? '⏹ Stop listening' : '🎧 Listen';
+  $('auTalk').classList.toggle('on', au.talking);
+  const st = au.st || {};
+  $('auDot').classList.toggle('live', au.listening || (st.listening || 0) > 0);
+  $('auDot').classList.toggle('on', !!st.present && !au.listening && !(st.listening > 0));
+  $('auStatus').textContent = !au.st ? 'Voice module…' : !st.present ? 'No speaker / microphone found on this car'
+    : `Voice module ready` + (st.listening ? ` · ${st.listening} listening` : '') + (st.talking ? ` · ${st.talking} talking` : '')
+      + (st.saying ? ' · speaking' : '') + (st.tts ? '' : ' · text to speech not installed');
+}
+async function auPoll() {
+  try { au.st = await (await fetch('/api/audio')).json(); } catch { return; }
+  const v = au.st.volume || {};
+  if (document.activeElement !== $('auSpk') && v.speaker != null) { $('auSpk').value = v.speaker; $('auSpkV').textContent = v.speaker + '%'; }
+  if (document.activeElement !== $('auMic') && v.mic != null) { $('auMic').value = v.mic; $('auMicV').textContent = v.mic + '%'; }
+  auUi();
+}
+setInterval(auPoll, 3000); auPoll();
+$('auListen').onclick = auListen;
+const talkBtn = $('auTalk');
+talkBtn.addEventListener('pointerdown', e => { e.preventDefault(); talkBtn.setPointerCapture(e.pointerId); auTalkStart(); });
+for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) talkBtn.addEventListener(ev, auTalkStop);
+async function auSay() {
+  const t = $('auText').value.trim(); if (!t) return;
+  const j = await (await fetch('/api/audio/say?text=' + encodeURIComponent(t), { method: 'POST' })).json().catch(() => ({ message: 'no answer' }));
+  log(`Say: ${j.message}`); if (j.ok) $('auText').value = '';
+}
+$('auSay').onclick = auSay;
+$('auText').addEventListener('keydown', e => { if (e.key === 'Enter') auSay(); });
+for (const [id, key] of [['auSpk', 'speaker'], ['auMic', 'mic']]) {
+  $(id).oninput = () => { $(id + 'V').textContent = $(id).value + '%'; };
+  $(id).onchange = () => fetch(`/api/audio/volume?${key}=${$(id).value}`, { method: 'POST' });
+}
+$('auBtn').onclick = e => {
+  e.stopPropagation();
+  const m = $('auMenu'); m.hidden = !m.hidden; $('auBtn').setAttribute('aria-expanded', String(!m.hidden));
+  if (!m.hidden) { $('gpMenu').hidden = true; auPoll(); }
+};
+document.addEventListener('click', e => {
+  if (!$('auMenu').hidden && !e.target.closest('.au-wrap')) { $('auMenu').hidden = true; $('auBtn').setAttribute('aria-expanded', 'false'); }
+});
+addEventListener('keydown', e => { if (e.key === 'Escape' && !$('auMenu').hidden) $('auMenu').hidden = true; });
 
 // 10 Hz control loop. Sends while input is active; a few zero commands after release.
 setInterval(() => {
@@ -1383,7 +1546,8 @@ async function fleetPoll() {
     const tip = p.online ? `${p.car}: ${b.v != null ? b.v.toFixed(2) + ' V, ' : ''}${st.mode}` +
       (Math.abs(st.speed || 0) > 0.01 ? `, ${st.speed.toFixed(2)} m/s` : '') + ' — click to open its page'
       : `${p.car} not reachable: ${p.error || ''}`;
-    return `<a class="pill peer${p.online ? '' : ' offline'}" href="http://${host}:${port}/" target="_blank" title="${esc(tip)}">` +
+    const url = SECURE ? `https://${host}/` : `http://${host}:${port}/`;   // the other car the same way as this page
+    return `<a class="pill peer${p.online ? '' : ' offline'}" href="${url}" target="_blank" title="${esc(tip)}">` +
       `<span class="dot${p.online ? ' ok' : ''}"></span><b>${esc(p.car)}</b> ${esc(txt)}</a>`;
   }).join('');
   if (mapMode === 'nav') drawNav();

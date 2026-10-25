@@ -33,6 +33,9 @@
   Nav2 (/bump/cloud), back out the other way, go on.
 - Lifted by hand (lift_detector.py, IMU): pause the mission and slam_toolbox's scan intake, mark the place it was
   driving to, go on when set down again.
+- Audio (audio.py, the voice module): GET /api/audio (status, volumes), GET /api/audio/listen (microphone stream,
+  raw 16 kHz mono s16le), POST /api/audio/talk (body: the same format), POST /api/audio/say?text=,
+  POST /api/audio/volume?speaker=&mic= (0-100).
 - Lidar odometry (lidar_odometry.py): rf2o_laser_odometry -> /odom_lidar (not fused into /odom yet: compare first).
 - Run recordings (run_recorder.py): every autonomous mapping run is recorded (timeline, Nav2 log, ros2 bag);
   GET /api/runs lists them.
@@ -82,6 +85,8 @@ from run_recorder import RunRecorder
 from stall_detector import StallDetector
 from lift_detector import LiftDetector
 from lidar_odometry import LidarOdometry
+from audio import Audio
+import queue
 from nav_manager import NavManager
 from peer_manager import PeerManager
 from slam_manager import SlamManager
@@ -147,6 +152,7 @@ class WebBridge(Node):
         self.shared = SharedMap(self, self.slam, self.nav, self.team, self.peers, CAR_NAME)   # one map for all
         self.team.shared = self.shared
         self.stall = StallDetector(self, self.slam.tf, self.explorer, self.nav, self.slam)   # motors on, car still
+        self.audio = Audio(self)                    # the voice module: listen, talk, say (audio.py)
         self.lidar_odom = LidarOdometry(self)       # rf2o: motion measured by the lidar -> /odom_lidar
         self.lift = LiftDetector(self, self.explorer, self.nav, self.slam, self.stall)       # picked up by hand
         self.depth_obs.hazards = self.stall                  # drops seen by the depth camera -> no-go marks
@@ -348,9 +354,37 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _who(self):
+        """Who is asking: the Tailscale login when the page came through Tailscale serve (https), else the address."""
+        return self.headers.get('Tailscale-User-Login') or self.client_address[0]
+
+    def _listen(self):
+        """Stream the car's microphone (raw 16 kHz mono s16le) until the page stops reading."""
+        audio = self.node.audio
+        if not audio.present():
+            return self._send(404, {'error': 'no microphone on this car'})
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/octet-stream')
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('X-Audio-Format', 's16le; rate=16000; channels=1')
+        self.end_headers()
+        who = self._who()
+        q = audio.listen(who)
+        try:
+            while True:
+                self.wfile.write(q.get(timeout=5))
+        except (BrokenPipeError, ConnectionResetError, OSError, queue.Empty):
+            pass
+        finally:
+            audio.unlisten(q, who)
+
     def do_GET(self):
         url = urllib.parse.urlparse(self.path)
         slam = self.node.slam
+        if url.path == '/api/audio':
+            return self._send(200, self.node.audio.status())
+        if url.path == '/api/audio/listen':
+            return self._listen()
         if url.path == '/api/charging':
             return self._send(200, {'mode': self.node.charging})
         if url.path == '/api/slam':
@@ -517,6 +551,24 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
             if ok and team:
                 msg += self.node.team_forward('start', ('idle',), radius=radius, dry=int(dry), wait=1)
             return self._send(200 if ok else 400, {'ok': ok, 'message': msg})
+        if url.path == '/api/audio/talk':
+            n = int(self.headers.get('Content-Length') or 0)
+            if not 0 < n <= 64000:
+                return self._send(400, {'ok': False, 'message': 'raw 16 kHz mono s16le, up to 2 s per request'})
+            ok, msg = self.node.audio.talk(self.rfile.read(n), self._who())
+            return self._send(200 if ok else 409, {'ok': ok, 'message': msg})
+        if url.path == '/api/audio/say':
+            text = urllib.parse.parse_qs(url.query).get('text', [''])[0]
+            ok, msg = self.node.audio.say(text, self._who())
+            return self._send(200 if ok else 409, {'ok': ok, 'message': msg})
+        if url.path == '/api/audio/volume':
+            q = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
+            try:
+                vals = {k: max(0, min(100, int(float(q[k])))) for k in ('speaker', 'mic') if k in q}
+            except ValueError:
+                return self._send(400, {'ok': False, 'message': 'speaker / mic: 0-100'})
+            self.node.audio.set_volume(**vals)
+            return self._send(200, {'ok': True, 'volume': self.node.audio.volumes()})
         if url.path == '/api/explore/backout':
             ok, msg = self.node.explorer.back_out()
             return self._send(200 if ok else 400, {'ok': ok, 'message': msg})
