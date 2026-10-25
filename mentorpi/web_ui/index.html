@@ -304,6 +304,7 @@
       <button class="btn" id="exploreStart" title="The car maps by itself: drives to the edges of the map until none are left, returns, saves">🧭 Autonomous mapping</button>
       <label class="slam-info" id="exploreTeamWrap" hidden title="Start (and stop) the other cars too: they map the same space together, splitting the unmapped edges. Start them near each other (they see the same walls): they map in place until their maps line up, then split up."><input type="checkbox" id="exploreTeam"> together</label>
       <button class="btn" id="exploreStop">Stop autonomous mapping</button>
+      <button class="btn" id="exploreBackout" title="Stuck? The car drives back along its own trail (or straight back), slowly, watching the lidar. While autonomous mapping runs, it then goes on.">↩ Back out</button>
       <span class="slam-info" id="slamMsg"></span>
     </div>
     <canvas id="slamMap"></canvas>
@@ -984,6 +985,14 @@ async function slamApi(action, query = '') {
   slamPoll();
 }
 $('slamStart').onclick = () => slamApi('start');
+$('exploreBackout').onclick = async () => {
+  if (!confirm('Back out?\n\nThe car drives backwards (about 0.3-0.8 m) along the way it came, slowly, and stops ' +
+               'if the lidar sees something close. E-STOP or the joystick stops it.')) return;
+  let j;
+  try { j = await (await fetch('/api/explore/backout', { method: 'POST' })).json(); } catch { j = { message: 'no answer from the car' }; }
+  $('slamMsg').textContent = j.message || '';
+  if (j.message) log(`Back out: ${j.message}`);
+};
 $('exploreStart').onclick = async () => {
   const r = $('exploreRadius').value, team = $('exploreTeam').checked && !$('exploreTeamWrap').hidden;
   const others = fleet.peers.filter(p => p.online && p.status && p.status.mode === 'idle').map(p => p.car);
@@ -1025,6 +1034,7 @@ async function slamPoll() {
   $('slamStart').disabled = st.running || !!(nav.st && nav.st.running); $('slamStop').disabled = !st.running; $('slamSave').disabled = !st.map;
   $('exploreStart').disabled = ex.active || !!(nav.st && nav.st.running && !nav.st.slam_mode) || chargeMode !== 'off';
   $('exploreStop').disabled = !ex.active; $('exploreRadius').disabled = !!ex.active;
+  $('exploreBackout').disabled = !st.running || chargeMode !== 'off' || !!ex.recovering;
   $('exploreTeamWrap').hidden = !fleet.peers.length;
   if (ex.message && ex.message !== exploreLast) {
     exploreLast = ex.message; log(`Autonomous mapping: ${ex.message}`); $('slamMsg').textContent = ex.message;

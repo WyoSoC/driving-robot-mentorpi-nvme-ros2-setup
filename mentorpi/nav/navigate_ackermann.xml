@@ -1,5 +1,6 @@
 <!--
-  NavigateToPose for a car-like robot (no spin-in-place): replan at 1 Hz while following the path;
+  NavigateToPose for a car-like robot (no spin-in-place): replan every 4 s while following the path (at 1 Hz
+  each new plan could pick other forward / reverse switches: the car went back and forth);
   on failure clear the costmaps, wait, or back up a little, then try again (6 attempts).
   Based on nav2_bt_navigator's navigate_to_pose_w_replanning_and_recovery.xml (Humble).
 -->
@@ -7,7 +8,7 @@
   <BehaviorTree ID="MainTree">
     <RecoveryNode number_of_retries="6" name="NavigateRecovery">
       <PipelineSequence name="NavigateWithReplanning">
-        <RateController hz="1.0">
+        <RateController hz="0.25">
           <RecoveryNode number_of_retries="1" name="ComputePathToPose">
             <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
             <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>

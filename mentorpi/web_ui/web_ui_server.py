@@ -18,7 +18,8 @@
   once navigation is up). Joystick input from the page cancels a navigation goal.
 - SLAM (slam_manager.py): GET /api/slam (status, pose, path), GET /api/slam/map.png,
   POST /api/slam/start | /api/slam/stop | /api/slam/save?name=NAME
-- Exploration (explore_manager.py): POST /api/explore/start?radius=M (0 = no limit) | /api/explore/stop;
+- Exploration (explore_manager.py): POST /api/explore/start?radius=M (0 = no limit) | /api/explore/stop |
+  /api/explore/backout (drive back along the own trail: while exploring, or after it stopped);
   its status is in GET /api/slam ("explore"). Maps by itself: SLAM + Nav2 on the live map + frontiers.
   team=1 on start / stop also starts / stops every other online car that is idle / exploring (mapping
   together, team.py; GET /api/slam/grid = this car's live map for the others).
@@ -471,6 +472,7 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
                 elif action == 'stop':
                     ok, msg = nav.stop()
                 elif action == 'cancel':
+                    self.node.explorer.recovering = False     # E-STOP also ends a Back out
                     ok, msg = nav.cancel()
                 elif action == 'find':
                     ok, msg = nav.find_position()
@@ -497,6 +499,9 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
             ok, msg = self.node.explorer.start(radius, dry=dry, wait_join=team or qs.get('wait', ['0'])[0] == '1')
             if ok and team:
                 msg += self.node.team_forward('start', ('idle',), radius=radius, dry=int(dry), wait=1)
+            return self._send(200 if ok else 400, {'ok': ok, 'message': msg})
+        if url.path == '/api/explore/backout':
+            ok, msg = self.node.explorer.back_out()
             return self._send(200 if ok else 400, {'ok': ok, 'message': msg})
         if url.path == '/api/explore/stop':
             ok, msg = self.node.explorer.stop()

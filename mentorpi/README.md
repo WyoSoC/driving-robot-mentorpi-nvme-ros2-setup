@@ -538,6 +538,43 @@ a stair edge, so the floor past it looks free. The depth camera looks straight a
 floor it gets no return from the floor at all. Block stairs, or keep the distance limit inside the
 safe area.
 
+#### When the car is stuck, and steering
+
+Recorded on jpi2 (2026-10-24): the collision monitor's front stop zone saw something just in front of the
+bumper and blocked every command, reversing too, for 4 minutes ("Robot to stop due to StopZone
+polygon"). The explorer gave up goal after goal without trying its escape move, and finally called the
+map complete. In tight spots the steering also hunted: forward and reverse switched 10–13 times in
+20 s, and the commanded wheel angle swung up to ±73°.
+
+- **No stop zone.** Humble's zones ignore the driving direction. The approach zone remains: it
+  simulates the actual motion, forward or reverse, so the car slows and never touches anything, and it
+  can always back away.
+- **Automatic recovery:**
+  - A goal that fails where the car stands (stuck for 40 s, or no path from there) makes it back out
+    along its own trail, or straight back, and go on. That frontier stays a target.
+  - After 3 escapes in a row that didn't help, autonomous mapping stops with "stuck: … press Back out".
+    It no longer writes off every frontier and declares the map complete.
+- **↩ Back out** (Map panel): the same move by hand. It drives back along the car's own trail, or
+  straight back if there is no trail, at 6 cm/s, stopping for anything the lidar sees close. While
+  autonomous mapping runs, it then goes on; otherwise it just moves. E-STOP, the joystick or Stop
+  ends it.
+- **Steering** (`nav_manager.shape_steering`): the gate passes curvature (turn rate ÷ speed), which is
+  what sets the wheel angle:
+  - never more than the wheels' 30°;
+  - held while slower than 3 cm/s (Hiwonder's atan(0.145 w / v) went to full lock at every slow-down);
+  - at most a full left-to-right swing per second.
+
+  Replayed on jpi2's recorded commands: left/right flips 13 → 3, jumps over 10° 45 → 0, total wheel
+  travel halved.
+- **Planner:**
+  - Reversing costs more (`reverse_penalty` 2.5 → 6), and switching turn direction costs a little
+    (`change_penalty` 0.3). On 12 goals on jpi2's live map: reverse driving 8.9 → 5.0 m, forward/reverse
+    switches 27 → 25.
+  - The path is replanned every 4 s instead of every second, so a new plan can't keep choosing
+    different forward/reverse switches.
+
+Tests: `tests/run.sh test_steering.py`, `tests/run.sh test_recovery.py`.
+
 #### Run recordings (`web_ui/run_recorder.py`)
 
 Every autonomous mapping run is recorded, from the page, from another car, or a dry run, to find out

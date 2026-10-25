@@ -17,6 +17,12 @@
 - Gate: Nav2's output (/nav/cmd_vel, after its collision monitor) reaches the motors (/cmd_vel, speed +
   turn rate, which odom_publisher clamps to 0.2 m/s and 0.5 rad/s) only while a goal is active and
   fresh. The page's E-stop and any joystick input cancel the goal; leaving it stops the car.
+- Steering (shape_steering): the wheels' angle follows the path's curvature (turn rate / speed; Hiwonder's
+  odom_publisher computes atan(0.145 * w / v)). Nav2 slows to a few cm/s at every forward / reverse switch
+  and near obstacles while still sending a turn rate, so the ratio jumped to full lock and back (recorded on
+  jpi2: steering -69..+73 deg, a dozen switches in 20 s). The gate keeps the curvature within what the wheels
+  can do (MAX_STEER_DEG), holds it while slower than STEER_V_MIN, and changes it by at most KAPPA_STEP per
+  command (full left to full right in about a second).
 """
 import math
 import os
@@ -46,6 +52,11 @@ LAUNCH = ['ros2', 'launch', '/home/ubuntu/nav/nav.launch.py']
 NAV_LOG = '/tmp/nav.log'   # Nav2's output (inside the container), overwritten at every start
 NAME_RE = map_store.NAME_RE
 CMD_FRESH_S = 0.5          # Nav2 command older than this -> stop
+WHEELBASE = 0.145          # m, as in Hiwonder's ackermann.py (steering = atan(WHEELBASE * w / v))
+MAX_STEER_DEG = 30.0       # the wheels' real limit
+KAPPA_MAX = math.tan(math.radians(MAX_STEER_DEG)) / WHEELBASE   # 1/m, ~4 (radius 0.25 m)
+STEER_V_MIN = 0.03         # m/s: slower -> keep the wheels where they are
+KAPPA_STEP = 0.8           # 1/m per command (10 Hz): full range (2 x KAPPA_MAX) in ~1 s
 PLAN_STEP = 0.05           # m between plan points sent to the page
 SCAN_TOPIC = '/scan_raw'
 SCAN_FRESH_S = 1.0
@@ -58,6 +69,14 @@ BUMPER = car_geometry.BUMPER   # lidar centre -> front / rear bumper
 
 def yaw_of(q):
     return math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
+
+
+def shape_steering(v, w, kappa):
+    """(speed, turn rate) from Nav2 + the curvature now -> (speed, turn rate to send, new curvature)."""
+    if abs(v) >= STEER_V_MIN:
+        want = max(-KAPPA_MAX, min(KAPPA_MAX, w / v))
+        kappa += max(-KAPPA_STEP, min(KAPPA_STEP, want - kappa))
+    return v, v * kappa, kappa
 
 
 class NavManager:
@@ -79,6 +98,7 @@ class NavManager:
         self.moving = False
         self.slam_mode = False
         self.goal_seq = 0
+        self.kappa = 0.0           # curvature the wheels are set to (shape_steering)
         self.scan = None
         self.finding = False
         self.found = None          # last find_position() result (pose, sure, why, ...)
@@ -416,8 +436,10 @@ class NavManager:
         self.last_nav_cmd = time.monotonic()
         if not self.goal_active():
             return
-        self.cmd_pub.publish(msg)
-        self.moving = abs(msg.linear.x) > 1e-3
+        out = Twist()
+        out.linear.x, out.angular.z, self.kappa = shape_steering(msg.linear.x, msg.angular.z, self.kappa)
+        self.cmd_pub.publish(out)
+        self.moving = abs(out.linear.x) > 1e-3
 
     def gate_watchdog(self):
         stale = self.last_nav_cmd is None or time.monotonic() - self.last_nav_cmd > CMD_FRESH_S

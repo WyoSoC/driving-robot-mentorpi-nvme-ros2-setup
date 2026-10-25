@@ -332,8 +332,8 @@ planner_server:
       analytic_expansion_ratio: 3.5
       analytic_expansion_max_length: 3.0
       minimum_turning_radius: 0.40
-      reverse_penalty: 2.5        # prefer driving forward
-      change_penalty: 0.0
+      reverse_penalty: 6.0        # prefer driving forward
+      change_penalty: 0.3         # switching left / right turns costs a little (less wiggle)
       non_straight_penalty: 1.2
       cost_penalty: 2.0
       retrospective_penalty: 0.015
@@ -392,16 +392,11 @@ collision_monitor:
     transform_tolerance: 0.5
     source_timeout: 2.0          # older data is ignored (1.0 dropped the camera during short stalls)
     stop_pub_timeout: 2.0
-    polygons: ["StopZone", "FootprintApproach"]
-    StopZone:                    # anything just in front of the bumper (front at x = 0.11): stop.
-      type: "polygon"            # Front only: Humble's zones ignore the driving direction, and a zone round
-      points: [0.18, 0.13, 0.18, -0.13, 0.10, -0.13, 0.10, 0.13]   # the whole car let a cable 5 cm
-                                 # behind it block driving forward. FootprintApproach (simulated motion,
-                                 # forward and reverse) guards the direction the car actually moves.
-      action_type: "stop"
-      max_points: 3
-      visualize: true
-      polygon_pub_topic: "collision_stop_zone"
+    polygons: ["FootprintApproach"]
+    # No stop zone: Humble's zones ignore the driving direction, so a zone in front of the car also blocked
+    # backing away from what was in it. On 2026-10-24 jpi2 stood 4 minutes in front of an obstacle, every
+    # command (reverse too) stopped ("Robot to stop due to StopZone polygon"). FootprintApproach simulates
+    # the actual motion (forward or reverse) and slows the car so it never touches anything.
     FootprintApproach:           # slow down so the car never hits anything within 1.2 s, either direction
       type: "polygon"
       points: [0.11, 0.09, 0.11, -0.09, -0.11, -0.09, -0.11, 0.09]   # the car (car_geometry.py)

@@ -210,6 +210,8 @@ class Explorer:
         self.scan = None
         self.escapes = 0
         self.unreached = 0
+        self.recovering = False    # Back out while not exploring
+        self.backout_req = False   # Back out asked for while exploring
         self.cmd_pub = node.create_publisher(Twist, '/cmd_vel', 1)
         node.create_subscription(LaserScan, SCAN_TOPIC, self._on_scan, qos_profile_sensor_data)
         threading.Thread(target=self._loop, daemon=True).start()
@@ -252,7 +254,34 @@ class Explorer:
             self.log.info(f'exploration started (radius {radius or "unlimited"} m)')
             return True, self.message
 
+    def back_out(self):
+        """Back out (Map panel): drive back along the car's own trail, else straight back or forward, slowly,
+        watching the lidar. While exploring: the current goal is dropped, then exploring goes on. Otherwise
+        (stopped, done, or just mapping): only the move. E-STOP, the joystick or Stop ends it."""
+        if not self.slam.running() or self.slam.pose is None:
+            return False, 'start mapping first (the car needs its position and trail)'
+        if self.recovering or self.backout_req:
+            return False, 'already backing out'
+        if self.active():
+            self.backout_req = True
+            return True, 'backing out, then exploring goes on'
+        if self.nav.goal_active():
+            self.nav.cancel('backing out')
+        self.recovering = True
+        threading.Thread(target=self._back_out_alone, daemon=True).start()
+        return True, 'backing out'
+
+    def _back_out_alone(self):
+        try:
+            moved = self._escape(force=True)
+            self.message = 'backed out' if moved else 'could not back out: no room behind or ahead (lidar)'
+        finally:
+            self.recovering = False
+            self.cmd_pub.publish(Twist())
+
     def stop(self, reason='exploration stopped'):
+        self.recovering = False
+        self.backout_req = False
         if self.active():
             self.mapped_m2 = self._known_m2()
         with self.lock:
@@ -293,20 +322,42 @@ class Explorer:
         sel = (np.abs(d) <= half_width_deg) & np.isfinite(r) & (r > 0.05)
         return float(r[sel].min()) if sel.any() else None
 
-    def _escape(self):
-        """Get out of a tight spot (the planner won't start there: 'Starting point in lethal space'):
-        first drive back along the car's own trail (it came in that way, so it fits), else straight.
+    def _escape(self, force=False):
+        """Get out of a tight spot (the planner won't start there: 'Starting point in lethal space', or the
+        car stands still in front of something): first drive back along the car's own trail (it came in
+        that way, so it fits), else straight. force: asked for (Back out), also after ESCAPE_MAX.
         Returns True if the car moved."""
-        if self.escapes >= ESCAPE_MAX:
+        if self.escapes >= ESCAPE_MAX and not force:
             return False
         if self._retrace():
             self.escapes += 1
             return True
         return self._straight_out()
 
+    def _may_drive(self):
+        return self.active() or self.recovering
+
+    def _stuck_recovery(self, why):
+        """A goal failed and the car didn't move: that is the car's spot, not the frontier's fault. Back out
+        and go on (the frontier stays a target). After ESCAPE_MAX escapes in a row that didn't get the car
+        anywhere: stop and ask for help, instead of writing off every frontier. True = handled."""
+        goal = self.goal
+        if self._escape():
+            self.log.info(f'exploration goal {goal} failed ({why}) where the car stood: backed out, going on')
+            self.goal = None
+            if self.state == 'returning':
+                self._send(self.home)
+            return True
+        if self.escapes >= ESCAPE_MAX:
+            self.goal = None
+            self.stop(f'stuck: backed out {ESCAPE_MAX} times without getting anywhere. Press "Back out" '
+                      f'or move the car, then start again')
+            return True
+        return False                                   # no room to move: count it as a failed goal
+
     def _drive_ok(self, direction_deg, body):
-        """False when someone drives with the joystick, exploring stopped, or an obstacle is close."""
-        if not self.active():
+        """False when someone drives with the joystick, exploring / Back out stopped, or an obstacle is close."""
+        if not self._may_drive():
             return False
         if time.monotonic() - self.node.last_cmd_time < 1.0 and self.node.moving:
             return False
@@ -395,7 +446,7 @@ class Explorer:
         moved = 0.0
         twist = Twist()
         twist.linear.x = sign * ESCAPE_SPEED
-        while self.active() and time.monotonic() - t0 < ESCAPE_M / ESCAPE_SPEED + 3.0:
+        while self._may_drive() and time.monotonic() - t0 < ESCAPE_M / ESCAPE_SPEED + 3.0:
             if time.monotonic() - self.node.last_cmd_time < 1.0 and self.node.moving:
                 break                                   # someone is driving with the joystick
             c = self._clearance(direction)
@@ -445,6 +496,17 @@ class Explorer:
             return self.stop('mapping stopped')
         if now - self.started_at > MAX_TIME:
             return self.stop(f'time limit ({MAX_TIME // 60} min)')
+        if self.backout_req and self.state != 'starting':      # Back out pressed on the page
+            self.backout_req = False
+            if self.goal is not None or self.nav.goal_active():
+                self.own_cancel = True
+                self.nav.cancel('backing out')
+                self.goal = None
+            moved = self._escape(force=True)
+            self.message = ('backed out, going on' if moved else 'could not back out: no room behind or ahead (lidar)')
+            if self.state == 'returning':
+                self._send(self.home)
+            return
 
         if self.state == 'starting':
             if not self.nav.running():
@@ -491,6 +553,8 @@ class Explorer:
                 if now - self.progress_at > STUCK_S:
                     self.own_cancel = True
                     self.nav.cancel('stuck')
+                    if self._stuck_recovery(f'stuck (no movement, nothing new mapped for {STUCK_S} s)'):
+                        return
                     self._failed(f'stuck (no movement, nothing new mapped for {STUCK_S} s)')
                     if self.state == 'returning':
                         return self._finish()
@@ -512,16 +576,10 @@ class Explorer:
                     math.hypot(pose[0] - self.send_xy[0], pose[1] - self.send_xy[1]) > STUCK_M
                 stuck_here = not moved and self._known_m2() - self.known_at_send < GAIN_OK
                 was_home = self.state == 'returning'
+                if stuck_here and self._stuck_recovery('could not reach it'):
+                    return
                 self._failed('could not reach it')
-                if stuck_here and self._escape():
-                    self.fails = max(0, self.fails - 1)     # not the frontier's fault: try it again
-                    if self.goal_center and self.goal_center in self.failed_centers:
-                        self.failed_centers.remove(self.goal_center)
-                    if was_home:
-                        self.state = 'returning'
-                        self._send(self.home)
-                        return
-                elif was_home:
+                if was_home:
                     return self._finish()
             elif gs == 'succeeded':
                 if self.state == 'returning':
@@ -589,6 +647,7 @@ class Explorer:
             self.blacklist.append(self.goal[:2])
             self.partial += 1
             self.fails = 0
+            self.escapes = 0
             self.log.info(f'exploration goal {self.goal} not reached ({why}) but mapped {gain:.1f} m2: useful')
             self.goal = None
             return
@@ -692,6 +751,7 @@ class Explorer:
         return {
             'state': self.state,
             'active': self.active(),
+            'recovering': self.recovering or self.backout_req,
             'message': self.message,
             'radius': self.radius,
             'home': self.home,

@@ -17,10 +17,7 @@ for cm in ('local_costmap', 'global_costmap'):
     print(f'{cm} footprint {got}')
     assert got == fp, f'{cm} footprint != car_geometry'
 cmon = P['collision_monitor']['ros__parameters']
-stop = cmon['StopZone']['points']
-xs, ys = stop[0::2], stop[1::2]
-print(f'stop zone x {min(xs)}..{max(xs)}, y {min(ys)}..{max(ys)}')
-assert min(xs) <= g.FRONT <= min(xs) + 0.02 and max(xs) - g.FRONT >= 0.05 and max(ys) >= g.HALF_WIDTH
+assert cmon['polygons'] == ['FootprintApproach'], 'no stop zone: it ignores the driving direction (blocked backing away)'
 appr = cmon['FootprintApproach']['points']
 xs, ys = appr[0::2], appr[1::2]
 print(f'approach zone x {min(xs)}..{max(xs)}, y {min(ys)}..{max(ys)}')
