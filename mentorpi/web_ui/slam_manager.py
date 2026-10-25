@@ -1,8 +1,8 @@
 """SLAM for the MentorPi web UI (runs inside web_ui_server.py, in the MentorPi container).
 
 - start/stop: runs only Hiwonder's slam_toolbox node (slam/launch/include/slam_base.launch.py,
-  config slam/config/slam.yaml: lidar /scan_raw, frames map -> odom -> base_footprint) next to the
-  running bringup. (slam.launch.py would start a second copy of the drivers.)
+  config slam/config/slam.yaml via nav/slam.launch.py (map every 2 s, not 0.2 s): lidar /scan_raw, frames map -> odom -> base_footprint) next to the
+  running bringup. (Hiwonder's own slam.launch.py would start a second copy of the drivers.)
 - /map (OccupancyGrid) is rendered to a PNG on the car; the browser fetches the image instead of
   the raw grid (hundreds of KB per update, too heavy over a slow link).
 - the car's pose in the map frame comes from TF map -> base_footprint; its path is kept here.
@@ -30,7 +30,7 @@ from std_msgs.msg import String
 from tf2_ros import Buffer, TransformListener
 
 MAPS_DIR = '/home/ubuntu/maps'
-LAUNCH = ['ros2', 'launch', 'slam', 'slam_base.launch.py']
+LAUNCH = ['ros2', 'launch', '/home/ubuntu/nav/slam.launch.py']   # Hiwonder's slam_toolbox setup, map every 2 s
 RENDER_PERIOD = 1.0        # s, at most one PNG per second
 PATH_STEP = 0.05           # m between stored path points
 PATH_MAX = 5000

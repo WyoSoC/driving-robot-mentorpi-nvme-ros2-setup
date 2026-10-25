@@ -378,8 +378,10 @@ bringup.
 
 ### Map (SLAM)
 
-The web UI's **Map** panel runs lidar SLAM (`slam_toolbox`, Hiwonder's `slam/config/slam.yaml`)
-next to the running system. Its tabs:
+The web UI's **Map** panel runs lidar SLAM (`slam_toolbox` with Hiwonder's `slam/config/slam.yaml`,
+started by `nav/slam.launch.py`) next to the running system. That launch file overrides two settings:
+the map is rebuilt and published every 2 s instead of every 0.2 s, which saved CPU for Nav2 while
+exploring, and RViz's interactive mode is off. Its tabs:
 
 - **Mapping:**
   - **Start mapping** only builds the map: the car does not move by itself. Drive it with the joystick,
