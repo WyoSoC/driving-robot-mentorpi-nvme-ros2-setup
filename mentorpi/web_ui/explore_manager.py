@@ -212,6 +212,8 @@ class Explorer:
         self.unreached = 0
         self.recovering = False    # Back out while not exploring
         self.backout_req = False   # Back out asked for while exploring
+        self.bump_req = 0          # stall_detector: pushed against something ahead (+1) / behind (-1)
+        self.blocked_at = 0.0
         self.cmd_pub = node.create_publisher(Twist, '/cmd_vel', 1)
         node.create_subscription(LaserScan, SCAN_TOPIC, self._on_scan, qos_profile_sensor_data)
         threading.Thread(target=self._loop, daemon=True).start()
@@ -254,6 +256,29 @@ class Explorer:
             self.log.info(f'exploration started (radius {radius or "unlimited"} m)')
             return True, self.message
 
+    def bumped(self, direction, note):
+        """stall_detector.py: the car pushed against something (direction +1 ahead / -1 behind) and the motors
+        are off. Back out the other way and go on."""
+        self.blocked_at = time.monotonic()            # an escape move that hit something ends now
+        self.log.info(f'{note}: backing out')
+        if self.active():
+            self.bump_req = direction                 # handled in _step (cancels the goal first)
+            self.message = note + ': backing out'
+        elif self.nav.goal_active() and not self.recovering:
+            self.nav.pause(note)                      # a navigation goal: back out, then resume it
+            self.recovering = True
+            threading.Thread(target=self._bump_out_nav, args=(direction, note), daemon=True).start()
+
+    def _bump_out_nav(self, direction, note):
+        try:
+            time.sleep(1.1)                           # let blocked_at expire
+            moved = self._straight_out(prefer=180 if direction > 0 else 0)
+        finally:
+            self.recovering = False
+            self.cmd_pub.publish(Twist())
+        self.log.info(f'{note}: {"backed out" if moved else "no room to back out"}, resuming the goal')
+        self.nav.resume()
+
     def back_out(self):
         """Back out (Map panel): drive back along the car's own trail, else straight back or forward, slowly,
         watching the lidar. While exploring: the current goal is dropped, then exploring goes on. Otherwise
@@ -282,6 +307,7 @@ class Explorer:
     def stop(self, reason='exploration stopped'):
         self.recovering = False
         self.backout_req = False
+        self.bump_req = 0
         if self.active():
             self.mapped_m2 = self._known_m2()
         with self.lock:
@@ -322,13 +348,15 @@ class Explorer:
         sel = (np.abs(d) <= half_width_deg) & np.isfinite(r) & (r > 0.05)
         return float(r[sel].min()) if sel.any() else None
 
-    def _escape(self, force=False):
+    def _escape(self, force=False, prefer=None):
         """Get out of a tight spot (the planner won't start there: 'Starting point in lethal space', or the
         car stands still in front of something): first drive back along the car's own trail (it came in
         that way, so it fits), else straight. force: asked for (Back out), also after ESCAPE_MAX.
         Returns True if the car moved."""
         if self.escapes >= ESCAPE_MAX and not force:
             return False
+        if prefer == 0:                               # hit something behind: get away forwards
+            return self._straight_out(prefer=0)
         if self._retrace():
             self.escapes += 1
             return True
@@ -356,8 +384,9 @@ class Explorer:
         return False                                   # no room to move: count it as a failed goal
 
     def _drive_ok(self, direction_deg, body):
-        """False when someone drives with the joystick, exploring / Back out stopped, or an obstacle is close."""
-        if not self._may_drive():
+        """False when someone drives with the joystick, exploring / Back out stopped, the car just bumped into
+        something (stall_detector.py), or an obstacle is close."""
+        if not self._may_drive() or time.monotonic() - self.blocked_at < 1.0:
             return False
         if time.monotonic() - self.node.last_cmd_time < 1.0 and self.node.moving:
             return False
@@ -426,8 +455,8 @@ class Explorer:
         time.sleep(0.3)
         self.cmd_pub.publish(Twist())
 
-    def _straight_out(self):
-        """Drive straight back (or forward) ESCAPE_M if the lidar shows room."""
+    def _straight_out(self, prefer=None):
+        """Drive straight back (or forward) ESCAPE_M if the lidar shows room. prefer: 0 forward / 180 back."""
         back, front = self._clearance(180), self._clearance(0)
         body = car_geometry.BUMPER          # lidar centre -> front / rear bumper
         options = [(c - body[d], d) for c, d in ((back, 180), (front, 0)) if c is not None]
@@ -435,8 +464,11 @@ class Explorer:
         if not options:
             self.log.info(f'escape: no room (behind {back}, ahead {front})')
             return False
-        room, direction = max(options) if not any(d == 180 for _, d in options) else \
-            next(o for o in options if o[1] == 180)            # prefer backing out the way it came
+        if prefer is not None and any(d == prefer for _, d in options):
+            room, direction = next(o for o in options if o[1] == prefer)
+        else:
+            room, direction = max(options) if not any(d == 180 for _, d in options) else \
+                next(o for o in options if o[1] == 180)        # prefer backing out the way it came
         sign = -1.0 if direction == 180 else 1.0
         self.escapes += 1
         self.message = f'tight spot: driving {"back" if sign < 0 else "forward"} {ESCAPE_M:.2f} m to get out'
@@ -446,7 +478,8 @@ class Explorer:
         moved = 0.0
         twist = Twist()
         twist.linear.x = sign * ESCAPE_SPEED
-        while self._may_drive() and time.monotonic() - t0 < ESCAPE_M / ESCAPE_SPEED + 3.0:
+        while self._may_drive() and time.monotonic() - self.blocked_at > 1.0 and \
+                time.monotonic() - t0 < ESCAPE_M / ESCAPE_SPEED + 3.0:
             if time.monotonic() - self.node.last_cmd_time < 1.0 and self.node.moving:
                 break                                   # someone is driving with the joystick
             c = self._clearance(direction)
@@ -496,6 +529,19 @@ class Explorer:
             return self.stop('mapping stopped')
         if now - self.started_at > MAX_TIME:
             return self.stop(f'time limit ({MAX_TIME // 60} min)')
+        if self.bump_req and self.state != 'starting':         # pushed against something (stall_detector)
+            direction, self.bump_req = self.bump_req, 0
+            if self.goal is not None or self.nav.goal_active():
+                self.own_cancel = True
+                self.nav.cancel('bumped into something')
+                self.goal = None
+            time.sleep(max(0.0, 1.1 - (time.monotonic() - self.blocked_at)))
+            moved = self._escape(force=True, prefer=180 if direction > 0 else 0)
+            self.message = ('bumped into something: backed out, going on' if moved
+                            else 'bumped into something and no room to back out (lidar)')
+            if self.state == 'returning':
+                self._send(self.home)
+            return
         if self.backout_req and self.state != 'starting':      # Back out pressed on the page
             self.backout_req = False
             if self.goal is not None or self.nav.goal_active():

@@ -130,6 +130,7 @@ Manual start without systemd (in this order):
 │   ├── car_geometry.py      the car's measured shape and sensor positions (used everywhere)
 │   ├── scan_filter.py       /scan_nav: lidar without readings inside the car's rectangle
 │   ├── run_recorder.py      records every autonomous mapping run (timeline, Nav2 log, bag)
+│   ├── stall_detector.py    motors on but the car doesn't move: stop, mark the spot, back out
 │   ├── explore_manager.py   autonomous mapping (frontier exploration)
 │   ├── depth_obstacles.py   depth camera obstacles (/depth/scan) + comparison with the lidar
 │   ├── map_store.py         saved maps + content hash (same map on two cars?)
@@ -574,6 +575,25 @@ map complete. In tight spots the steering also hunted: forward and reverse switc
     different forward/reverse switches.
 
 Tests: `tests/run.sh test_steering.py`, `tests/run.sh test_recovery.py`.
+
+**Bumping into something** (`web_ui/stall_detector.py`): the motors turn but the car doesn't move. The car
+has no wheel encoders: Hiwonder's `/odom` adds up the commanded speed, so it "moves" while jammed. The
+lidar is the honest sign.
+- **Blocked:** during a mission (autonomous mapping, a navigation goal, the escape move; not joystick
+  driving) the motors were told to drive at ≥ 4 cm/s in one direction for 1.5 s, and the lidar ranges
+  ahead and behind changed by less than 2.5 cm (median, compared per 1° direction: the MS200 sends 448
+  to 450 readings per turn).
+- **Then:**
+  - the motors stop;
+  - the spot just past the pushing bumper is marked for Nav2 (`/bump/cloud` → `bump_layer` in both
+    costmaps, kept for this mapping or navigation run), because it's something the sensors don't see;
+  - the car backs out the other way: backwards along its trail after hitting something ahead, forwards
+    after hitting something behind;
+  - autonomous mapping picks its next goal, and a navigation goal is paused and resumed.
+- **Checked** on jpi2's recording, 6 minutes: while driving, the lidar changed at least 9.6 cm (1st
+  percentile) in 1.5 s, so no false alarms; standing still, 99 % of changes were under 0.6 cm.
+
+Test: `tests/run.sh test_stall.py`.
 
 #### Run recordings (`web_ui/run_recorder.py`)
 

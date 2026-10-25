@@ -176,7 +176,7 @@ local_costmap:
       resolution: 0.05
       footprint: "[[0.11, 0.09], [0.11, -0.09], [-0.11, -0.09], [-0.11, 0.09]]"   # web_ui/car_geometry.py
       footprint_padding: 0.0       # the measured rectangle itself (car_geometry.py)
-      plugins: ["obstacle_layer", "depth_layer", "fleet_layer", "inflation_layer"]
+      plugins: ["obstacle_layer", "depth_layer", "fleet_layer", "bump_layer", "inflation_layer"]
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true
@@ -231,6 +231,19 @@ local_costmap:
           marking: true
           obstacle_max_range: 8.0
           obstacle_min_range: 0.0
+      bump_layer:                     # where the car pushed against something it did not see (motors on,
+        plugin: "nav2_costmap_2d::ObstacleLayer"   # lidar still: web_ui/stall_detector.py). Marks only, kept
+        enabled: true                 # for this mapping / navigation run, so the planner doesn't go there again.
+        observation_sources: bumps
+        bumps:
+          topic: /bump/cloud
+          data_type: "PointCloud2"
+          min_obstacle_height: -0.1
+          max_obstacle_height: 2.0
+          clearing: false
+          marking: true
+          obstacle_max_range: 8.0
+          obstacle_min_range: 0.0
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 4.0
@@ -249,7 +262,7 @@ global_costmap:
       track_unknown_space: true
       footprint: "[[0.11, 0.09], [0.11, -0.09], [-0.11, -0.09], [-0.11, 0.09]]"   # web_ui/car_geometry.py
       footprint_padding: 0.0       # the measured rectangle itself (car_geometry.py)
-      plugins: ["static_layer", "obstacle_layer", "depth_layer", "fleet_layer", "inflation_layer"]
+      plugins: ["static_layer", "obstacle_layer", "depth_layer", "fleet_layer", "bump_layer", "inflation_layer"]
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: true
@@ -300,6 +313,19 @@ global_costmap:
           raytrace_min_range: 0.0
         cars:
           topic: /fleet/cloud
+          data_type: "PointCloud2"
+          min_obstacle_height: -0.1
+          max_obstacle_height: 2.0
+          clearing: false
+          marking: true
+          obstacle_max_range: 8.0
+          obstacle_min_range: 0.0
+      bump_layer:                     # where the car pushed against something it did not see (motors on,
+        plugin: "nav2_costmap_2d::ObstacleLayer"   # lidar still: web_ui/stall_detector.py). Marks only, kept
+        enabled: true                 # for this mapping / navigation run, so the planner doesn't go there again.
+        observation_sources: bumps
+        bumps:
+          topic: /bump/cloud
           data_type: "PointCloud2"
           min_obstacle_height: -0.1
           max_obstacle_height: 2.0

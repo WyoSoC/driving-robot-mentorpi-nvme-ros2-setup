@@ -29,6 +29,8 @@
   cars poll), GET /api/fleet = this car + the latest status of every other car, GET /api/maps = maps here
   and on the other cars, GET /api/maps/file?name=&ext=png|yaml (a map for another car to copy).
   A map of another car: GET /api/nav/map.png?name=&car=, POST /api/nav/start?map=&car= copies it here first.
+- Bumps (stall_detector.py): during a mission, motors driving but the lidar still -> stop, mark the spot for
+  Nav2 (/bump/cloud), back out the other way, go on.
 - Run recordings (run_recorder.py): every autonomous mapping run is recorded (timeline, Nav2 log, ros2 bag);
   GET /api/runs lists them.
 - Managing maps (Map panel -> Maps): POST /api/maps/rename?name=&to= | /api/maps/delete?name= (here, then on the
@@ -74,6 +76,7 @@ from team import Team
 from shared_map import SharedMap
 from scan_filter import ScanFilter
 from run_recorder import RunRecorder
+from stall_detector import StallDetector
 from nav_manager import NavManager
 from peer_manager import PeerManager
 from slam_manager import SlamManager
@@ -138,6 +141,7 @@ class WebBridge(Node):
         self.fleet = Fleet(self, self.slam.tf, self.nav, self.peers, CAR_NAME, self.team)
         self.shared = SharedMap(self, self.slam, self.nav, self.team, self.peers, CAR_NAME)   # one map for all
         self.team.shared = self.shared
+        self.stall = StallDetector(self, self.slam.tf, self.explorer, self.nav, self.slam)   # motors on, car still
         self.recorder = RunRecorder(self, self.explorer, self.nav, self.slam, CAR_NAME, self.team)  # runs/
         self.merge_lock = threading.Lock()
         self.merge_cache = {}      # (hash a, hash b) -> align result
