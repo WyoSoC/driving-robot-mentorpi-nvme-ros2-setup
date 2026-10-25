@@ -57,6 +57,7 @@ import http.server
 import json
 import math
 import urllib.parse
+import urllib.request
 import os
 import threading
 import time
@@ -86,12 +87,14 @@ from stall_detector import StallDetector
 from lift_detector import LiftDetector
 from lidar_odometry import LidarOdometry
 from audio import Audio
+from vlm_client import VLM
 import queue
 from nav_manager import NavManager
 from peer_manager import PeerManager
 from slam_manager import SlamManager
 
 HTTP_PORT = int(os.environ.get('WEB_UI_PORT', 8000))
+RGB_TOPIC = '/ascamera/camera_publisher/rgb0/image'
 CAR_NAME = os.environ.get('CAR_NAME') or os.uname().nodename.split('.')[0]
 PEERS = os.environ.get('PEERS', '')
 WEB_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -153,6 +156,8 @@ class WebBridge(Node):
         self.team.shared = self.shared
         self.stall = StallDetector(self, self.slam.tf, self.explorer, self.nav, self.slam)   # motors on, car still
         self.audio = Audio(self)                    # the voice module: listen, talk, say (audio.py)
+        self.vlm = VLM(os.environ.get('VLM_URLS', '').split(), os.environ.get('VLM_MODEL') or 'qwen3.8',
+                       CAR_NAME, self.get_logger())   # VLM servers on the tailnet, with fallback (vlm_client.py)
         self.lidar_odom = LidarOdometry(self)       # rf2o: motion measured by the lidar -> /odom_lidar
         self.lift = LiftDetector(self, self.explorer, self.nav, self.slam, self.stall)       # picked up by hand
         self.depth_obs.hazards = self.stall                  # drops seen by the depth camera -> no-go marks
@@ -387,6 +392,8 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
             return self._listen()
         if url.path == '/api/charging':
             return self._send(200, {'mode': self.node.charging})
+        if url.path == '/api/vlm':
+            return self._send(200, self.node.vlm.status())
         if url.path == '/api/slam':
             q = urllib.parse.parse_qs(url.query)
             return self._send(200, slam.status(int(q.get('since', ['0'])[0] or 0)) | {'explore': self.node.explorer.status()})
@@ -493,9 +500,26 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
             return self._send(404, {'error': 'not found'})
         return self._send(200, got[0], got[1])
 
+    def _vlm_look(self):
+        """Ask the VLM what the car's camera sees now (a test of the VLM servers; nothing moves)."""
+        try:
+            with urllib.request.urlopen(f'http://127.0.0.1:8080/snapshot?topic={RGB_TOPIC}', timeout=5) as r:
+                jpg = r.read()
+        except Exception as exc:
+            return {'ok': False, 'error': f'no camera picture ({exc}); charging mode?'}
+        r = self.node.vlm.ask(
+            'You are the camera of a small indoor robot car (20 cm long, camera 11 cm above the floor). Describe '
+            'what is in front of it in one sentence, then list obstacles a 2D lidar 16 cm above the floor could '
+            'miss (low objects, cables, thin legs, glass, steps down). JSON only: '
+            '{"scene": "...", "low_hazards": ["..."], "open_path_ahead": true/false}', [jpg])
+        self.node.get_logger().info(f'VLM look ({self._who()}): {r.get("server")} {r.get("seconds")} s')
+        return r
+
     def do_POST(self):
         url = urllib.parse.urlparse(self.path)
         slam = self.node.slam
+        if url.path == '/api/vlm/look':
+            return self._send(200, self._vlm_look())
         if url.path.startswith('/api/runs/') and url.path.endswith('/delete'):
             ok, msg = self.node.recorder.delete(url.path.split('/')[3])
             return self._send(200 if ok else 400, {'ok': ok, 'message': msg})

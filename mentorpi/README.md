@@ -164,7 +164,7 @@ Manual start without systemd (in this order):
 ├── tests/run.sh             tests run in the container, nothing drives: test_fleet.py (cars avoiding
 │                            each other), test_merge.py (map merging), test_localize.py (finding the car on a map),
 │                            test_depth_sim.py (depth threat levels)
-│                            test_runs.py (run recording, Runs tab data, zip)
+│                            test_runs.py (run recording, Runs tab data, zip), test_vlm.py (VLM server fallback)
 ├── install.sh               installs/updates everything on a car (idempotent)
 ├── make_bundle.sh           packages kit + Docker image for transfer
 ├── system/                  udev rules + systemd unit templates
@@ -180,6 +180,7 @@ Manual start without systemd (in this order):
 │   ├── car_geometry.py      the car's measured shape and sensor positions (used everywhere)
 │   ├── scan_filter.py       /scan_nav: lidar without readings inside the car's rectangle
 │   ├── run_recorder.py      records every mapping / navigation run (timeline, camera, map, bag)
+│   ├── vlm_client.py        VLM servers on the tailnet (Ollama), best first, with fallback
 │   ├── stall_detector.py    motors on but the car doesn't move: stop, mark the spot, back out
 │   ├── lift_detector.py     picked up by hand (IMU): pause mission + SLAM, mark the place, resume
 │   ├── lidar_odometry.py    rf2o lidar odometry (/odom_lidar) and its averaged speed for the EKF
@@ -812,6 +813,51 @@ state and the last thing that happened. **⬇ Download** gets the whole folder a
 
 HTTP: `GET /api/runs` (list), `/api/runs/<id>` (details and timeline), `/api/runs/<id>/map.png`,
 `/api/runs/<id>/frame/<t>.jpg`, `/api/runs/<id>/download` (zip); `POST /api/runs/<id>/delete`.
+
+### VLM servers (vision-language model on the tailnet, `web_ui/vlm_client.py`)
+
+The cars can ask a vision-language model about camera pictures and maps. Nothing drives on its answers yet:
+it is the base for an exploration advisor (pick the next frontier) and for naming hazards the lidar
+misses. The model (default Qwen 3.8, 27B, sees images) runs in Ollama on GPU servers in the tailnet,
+never on the car. Pictures stay in the tailnet.
+
+**Servers.** Any Linux machine with an NVIDIA GPU (24 GB or more) and Ollama:
+
+```bash
+ollama pull qwen3.8
+sudo tailscale serve --bg --https=11434 http://127.0.0.1:11434   # tailnet only; Ollama stays on localhost
+```
+
+Ollama only answers requests addressed to `localhost` (others get 403), so the cars send `Host: localhost`.
+Undo with `sudo tailscale serve --https=11434 off`.
+
+**Cars.** List the servers by their short tailnet names in `fleet.env` (or `car.env`; neither is in git):
+
+```bash
+VLM_HOSTS="server1 server2 server3"    # VLM_MODEL=qwen3.8 is the default
+```
+
+`start_web_ui.sh` turns each into `https://<name>.<tailnet>:11434`. Restart the web UI after a change.
+
+**Fallback.** Every 15 s each car asks every server what it has installed and loaded. A question goes
+to the best server first:
+1. one with the model already loaded (loading takes 5 s to about 1 min, so waiting a second for a busy
+   loaded server is better);
+2. one this car isn't already waiting on;
+3. one whose GPU isn't holding someone else's models;
+4. the fastest recently.
+
+Ties go by the order in `VLM_HOSTS`, turned by the car's number (jpi1 starts with the first server, jpi2
+with the second), so the cars spread out. A server that fails or takes longer than 20 s (90 s if it must
+load the model) is skipped for 60 s and the next one is asked. If none answers, the caller carries on
+without the VLM. `warm()` loads the model on the two best servers so a backup is always ready.
+
+Measured from car 1 (RTX 5000 Ada server, Qwen 3.8): a question with one or two camera pictures takes
+1–2.5 s once loaded; the tailnet adds about 0.15 s.
+
+HTTP: `GET /api/vlm` (servers: up, model installed / loaded, busy, answer time, skipped);
+`POST /api/vlm/look` asks the VLM what the camera sees now, and which low obstacles a 2D lidar could miss
+(a test; nothing moves).
 
 ### Mapping together (two cars explore at once)
 
