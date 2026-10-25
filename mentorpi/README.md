@@ -164,7 +164,8 @@ Manual start without systemd (in this order):
 ├── tests/run.sh             tests run in the container, nothing drives: test_fleet.py (cars avoiding
 │                            each other), test_merge.py (map merging), test_localize.py (finding the car on a map),
 │                            test_depth_sim.py (depth threat levels)
-│                            test_runs.py (run recording, Runs tab data, zip), test_vlm.py (VLM server fallback)
+│                            test_runs.py (run recording, Runs tab data, zip), test_vlm.py (VLM server fallback),
+│                            test_depth_record.py (depth images in runs, floor-fit reasons, replay)
 ├── install.sh               installs/updates everything on a car (idempotent)
 ├── make_bundle.sh           packages kit + Docker image for transfer
 ├── system/                  udev rules + systemd unit templates
@@ -181,6 +182,7 @@ Manual start without systemd (in this order):
 │   ├── scan_filter.py       /scan_nav: lidar without readings inside the car's rectangle
 │   ├── run_recorder.py      records every mapping / navigation run (timeline, camera, map, bag)
 │   ├── vlm_client.py        VLM servers on the tailnet (Ollama), best first, with fallback
+│   ├── depth_replay.py      a run's depth images through the depth rules offline (tuning on real floors)
 │   ├── stall_detector.py    motors on but the car doesn't move: stop, mark the spot, back out
 │   ├── lift_detector.py     picked up by hand (IMU): pause mission + SLAM, mark the place, resume
 │   ├── lidar_odometry.py    rf2o lidar odometry (/odom_lidar) and its averaged speed for the EKF
@@ -772,6 +774,14 @@ data, onto a floor ending at an edge.
 
 Not yet tried at real stairs.
 
+**Known problem (2026-10-25):** on car 1 the floor fit has not succeeded in the house since the morning, so
+heights come from the nominal mounting and **the drop check does not run** (it needs a measured floor). A
+tilt of only 2.5° between the real camera and its mounting is enough to make the fit fail (far floor points
+leave the 2.5 cm band; tests/test_depth_record.py). The page now says so next to the camera comparison
+("⚠ floor not measured: <why> — no stairs check"). The same problem makes the small ramp into the kitchen
+look like an obstacle. Next: record runs with depth images, replay them (`depth_replay.py`) and fix the fit
+and the ramp rule on that data. Until then, keep the cars away from stairs and ledges.
+
 #### Run recordings (`web_ui/run_recorder.py`) and the Runs tab
 
 Every mapping and navigation run is recorded, to look at it again afterwards: where the car went, what it
@@ -793,6 +803,10 @@ One folder per run in `~/docker/tmp/runs/` on the car (`/home/ubuntu/shared/runs
   - the car's position every second;
   - every Nav2 warning or error, and every bump, lift and tip, with the car's position at that moment;
 - `frames/`: a camera picture every second (320 × 240 JPEG, about 10 KB), named by the time;
+- `depth/`: a depth image every second (320 × 240, 16-bit PNG in mm, lossless, about 60 KB), with
+  `camera.json` (intrinsics and the camera's mounting) and `index.jsonl` (the floor fit per image, or why
+  it failed). `web_ui/depth_replay.py` replays them offline through the obstacle, bump, drop and floor
+  rules, with other settings if wanted (`--set NAME=VALUE`, `--at <t>` for one moment);
 - `map.png`, `map.json`: the map (while mapping: the map as the page shows it, every 30 s and at the end;
   navigating: the saved map);
 - `nav.log`: Nav2's whole output;

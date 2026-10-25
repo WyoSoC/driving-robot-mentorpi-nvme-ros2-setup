@@ -77,6 +77,7 @@ FLOOR_MIN_PTS = 150
 FLOOR_MAX_OFFSET = 0.03  # m, FLOOR_MAX_TILT rad: larger corrections are not believed
 FLOOR_MAX_TILT = math.radians(3)
 FLOOR_ALPHA = 0.2        # smoothing of the fitted plane
+FLOOR_HIST = 50          # frames (10 s) for the floor statistics on the page
 FOV_HALF = math.radians(29)           # camera: 58 deg wide
 FLOOR_MIN_SECTORS = 7                 # floor points in at least 7 of 10 sectors across the view
 DROP_H = -0.06           # m: below the floor by this much = a lower floor (stairs, ledge)
@@ -92,11 +93,18 @@ MARK_STEP = 0.03
 BIN = math.radians(0.5)
 
 
-def fit_floor(p):
-    """Plane z = a + b x + c y through the floor points (robust: fit, drop outliers, refit), or None."""
+def fit_floor(p, why=None):
+    """Plane z = a + b x + c y through the floor points (robust: fit, drop outliers, refit), or None.
+    why (a dict): filled with the reason when there is no plane, for the page and depth_replay.py."""
+    why = why if why is not None else {}
+    why.clear()
     r = np.hypot(p[:, 0], p[:, 1])
-    sel = (np.abs(p[:, 2]) < FLOOR_BAND) & (r > 0.25) & (r < 1.8)
+    near = (r > 0.25) & (r < 1.8)
+    sel = (np.abs(p[:, 2]) < FLOOR_BAND) & near
     if sel.sum() < FLOOR_MIN_PTS:
+        why.update(stage='no floor near the expected height', candidates=int(sel.sum()), need=FLOOR_MIN_PTS,
+                   points_0_25_to_1_8m=int(near.sum()),
+                   median_height_cm=round(float(np.median(p[near, 2])) * 100, 1) if near.any() else None)
         return None
     # Floor is flat: keep points from 5 cm patches whose heights vary by < 8 mm. The lower part of a
     # vertical face (shoe, box) is also near floor height, but varies a lot within its patch.
@@ -109,12 +117,18 @@ def fit_floor(p):
     idx = np.flatnonzero(sel)
     sel = np.zeros(len(p), bool); sel[idx[flat[inv]]] = True
     if sel.sum() < FLOOR_MIN_PTS:
+        why.update(stage='floor too rough (few flat 5 cm patches)', flat_points=int(sel.sum()), need=FLOOR_MIN_PTS)
         return None
     # Real floor fills the view; a rug strip or a table top on one side is not the floor (glossy floors
     # return nothing, and the fit would latch onto the rug).
     ang = np.arctan2(p[sel, 1], p[sel, 0])
     sectors = np.unique(np.clip(((ang + FOV_HALF) / (2 * FOV_HALF) * 10).astype(int), 0, 9))
     if len(sectors) < FLOOR_MIN_SECTORS or np.ptp(r[sel]) < 0.6:
+        why.update(stage=('floor seen only in part of the view' if len(sectors) < FLOOR_MIN_SECTORS else
+                          'floor found only in a narrow band of distances (camera tilted differently from its mounting?)'),
+                   sectors=int(len(sectors)), need=FLOOR_MIN_SECTORS,
+                   depth_spread_m=round(float(np.ptp(r[sel])), 2), need_spread_m=0.6,
+                   from_m=round(float(r[sel].min()), 2), to_m=round(float(r[sel].max()), 2))
         return None
     q = p[sel]
     for _ in range(2):
@@ -123,10 +137,14 @@ def fit_floor(p):
         res = np.abs(A @ coef - q[:, 2])
         keep = res < 0.008
         if keep.sum() < FLOOR_MIN_PTS:
+            why.update(stage='floor points not on one plane', on_plane=int(keep.sum()), need=FLOOR_MIN_PTS)
             return None
         q = q[keep]
     a, b, c = coef
     if abs(a) > FLOOR_MAX_OFFSET or abs(b) > math.tan(FLOOR_MAX_TILT) or abs(c) > math.tan(FLOOR_MAX_TILT):
+        why.update(stage='plane too far from the nominal camera mounting', offset_cm=round(float(a) * 100, 1),
+                   pitch_deg=round(math.degrees(math.atan(b)), 2), roll_deg=round(math.degrees(math.atan(c)), 2),
+                   limits=f'{FLOOR_MAX_OFFSET * 100:.0f} cm, {math.degrees(FLOOR_MAX_TILT):.0f} deg')
         return None
     return np.array([a, b, c])
 
@@ -221,6 +239,9 @@ class DepthObstacles:
         self.drop_pub = node.create_publisher(LaserScan, '/depth/drops', 1)
         self.floor = np.zeros(3)      # fitted floor plane a + b x + c y (smoothed)
         self.floor_seen = 0.0         # monotonic time the floor was last fitted
+        self.floor_why = {}           # why the last fit failed (fit_floor)
+        self.floor_hist = []          # last FLOOR_HIST frames: fitted or the failure stage
+        self.on_frame = None          # run_recorder.py: called with each processed frame while recording
         self.bump_hist = []
         self.bumps = None
         self.cells = (0, 0)
@@ -291,7 +312,16 @@ class DepthObstacles:
         d = d[::STEP, ::STEP].reshape(-1).astype(np.float32) * 0.001          # m along the optical axis
         ok = (d > MIN_RANGE) & (d < MAX_RANGE)
         p = (self.rays[ok] * d[ok, None]) @ self.R.T + self.t                 # points in base_footprint
-        fl = fit_floor(p)
+        why = {}
+        fl = fit_floor(p, why)
+        self.floor_why = why
+        self.floor_hist.append(why.get('stage', 'ok'))
+        del self.floor_hist[:-FLOOR_HIST]
+        if self.on_frame is not None:
+            try:
+                self.on_frame(msg, fl, why)
+            except Exception as exc:
+                self.log.warn(f'depth obstacles: recording a frame: {exc!r}')
         if fl is not None:
             self.floor = (1 - FLOOR_ALPHA) * self.floor + FLOOR_ALPHA * fl if self.floor_seen else fl
             self.floor_seen = now
@@ -394,6 +424,9 @@ class DepthObstacles:
         res = {'alive': alive, 'frames': self.frames, 'max_range': MAX_RANGE,
                'levels_m': {'drivable_up_to': CLIMB_H, 'bump_up_to': BUMP_H, 'max_step': STEP_H},
                'floor': {'seen_s_ago': round(floor_age, 1) if floor_age is not None else None,
+                         'ok_pct': round(100 * self.floor_hist.count('ok') / len(self.floor_hist)) if self.floor_hist else None,
+                         'why': self.floor_why or None,
+                         'drops_checked': bool(self.floor_seen and now - self.floor_seen < DROP_FLOOR_S),
                          'offset_cm': round(float(self.floor[0]) * 100, 1),
                          'pitch_deg': round(math.degrees(math.atan(self.floor[1])), 2),
                          'roll_deg': round(math.degrees(math.atan(self.floor[2])), 2)},

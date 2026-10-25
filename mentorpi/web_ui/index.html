@@ -121,6 +121,7 @@
   .slam-info { font-size: 11px; color: var(--muted); margin-top: 4px; }
   .slam-bar input[type=checkbox] { width: auto; padding: 0; margin: 0; accent-color: var(--accent); }
   .slam-bar label.slam-info { display: inline-flex; align-items: center; gap: 4px; margin-top: 0; cursor: pointer; }
+  #cmpInfo .warn-text { color: var(--warn); }
   #cmpInfo b { font-weight: 600; } #cmpInfo .cam { color: var(--cam); } #cmpInfo .bump { color: var(--bump); }
   .panel h2 .right select + select { margin-left: 4px; }
   .slam-bar select { background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
@@ -1054,13 +1055,18 @@ ros.subscribe('/depth/compare', 'std_msgs/msg/String', msg => {
     ` — since start ${pct('both')} / <span class="cam">${pct('camera')}</span> / ${pct('lidar')}` +
     (c.bump_dirs ? ` · <b class="bump">${c.bump_dirs}</b> bump${c.nearest_bump_m != null ? ' (' + c.nearest_bump_m.toFixed(2) + ' m)' : ''}` : '') +
     (c.drop_points ? ` · ⚠ ${c.drop_points} points below the floor` : '');
+  const fs = c.floor || {};
+  if (!fs.drops_checked)   // depth_obstacles.fit_floor: without a measured floor, no drop (stairs) check
+    el.innerHTML += ` · <b class="warn-text">⚠ floor not measured${fs.why && fs.why.stage ? ': ' + esc(fs.why.stage) : ''}` +
+      ` — no stairs check</b>` + (fs.ok_pct != null ? ` (fitted in ${fs.ok_pct}% of the last 10 s)` : '');
   el.title = `Since start (${tot} direction samples): agree ${pct('both')}, camera only ${pct('camera')}, ` +
     `lidar only ${pct('lidar')}. Camera only = low things under the lidar plane; lidar only = things the camera ` +
     `misses (shiny, dark, thin, too close or too far).`;
   const f = c.floor || {};
   el.title += f.seen_s_ago != null && f.seen_s_ago < 5
     ? ` Floor fitted (${f.offset_cm} cm, pitch ${f.pitch_deg}°, roll ${f.roll_deg}°).`
-    : ' Floor not visible (glossy floor?): heights from the nominal camera mounting.';
+    : ` Floor not measured: heights come from the nominal camera mounting, and drops (stairs) are not checked.` +
+      (f.why ? ` Why: ${Object.entries(f.why).map(([k, v]) => k + ' ' + v).join(', ')}.` : '');
   const lv = c.levels_m || {};
   if (lv.drivable_up_to != null) el.title += ` Drivable up to ${lv.drivable_up_to * 100} cm, bumps up to ${lv.bump_up_to * 100} cm` +
     ` if no step over ${lv.max_step * 100} cm; higher or steeper = obstacle.`;

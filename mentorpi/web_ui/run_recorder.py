@@ -17,6 +17,10 @@ Folder RUNS_DIR/YYYYMMDD_HHMMSS_<car>/:
                 {"type": "nav2"}    every WARN / ERROR line of Nav2 (nav.log), with the pose at that moment
                 {"type": "warn"}    bump, lift, tip (stall / lift detectors), with the pose
 - frames/       camera pictures, FRAME_S apart, FRAME_W x FRAME_H JPEG; the name is t (e.g. 0012.0.jpg)
+- depth/        depth images, DEPTH_S apart: every DEPTH_STEP-th pixel (320 x 240), 16-bit PNG in mm (lossless;
+                ~60 KB); depth/camera.json: intrinsics of these images and the camera's mounting (R, t in
+                base_footprint); depth/index.jsonl: per image the floor fit (plane or why not). Replay offline:
+                depth_replay.py (floor fit, obstacles, bumps, drops on real floors)
 - map.png, map.json   the map (the SLAM map as the page shows it, every MAP_S and at the end; the saved
                 map when navigating); map.json: resolution, origin (x, y of the bottom left corner), map name,
                 view (mapping together: x, y, yaw from the car's frame, which the poses are in, to the map's)
@@ -58,6 +62,8 @@ MOVE_M = 0.05              # "moved": this far, or MOVE_RAD turned
 MOVE_RAD = 0.1
 RESTART_M = 0.2            # after an idle end: a new run once the car is this far from where it stood
 SHORT_S = 60.0
+DEPTH_S = 1.0
+DEPTH_STEP = 2
 RGB_TOPIC = '/ascamera/camera_publisher/rgb0/image'
 NAV_LOG = '/tmp/nav.log'
 TOPICS = ['/scan_raw', '/scan_nav', '/depth/scan', '/depth/bumps', '/odom', '/tf', '/tf_static',
@@ -126,6 +132,7 @@ class RunRecorder:
         rid = datetime.now().strftime('%Y%m%d_%H%M%S') + f'_{self.me}'
         d = os.path.join(RUNS_DIR, rid)
         os.makedirs(os.path.join(d, 'frames'), exist_ok=True)
+        os.makedirs(os.path.join(d, 'depth'), exist_ok=True)
         info = {'id': rid, 'car': self.me, 'kind': what, 'started': time.time()}
         if what == 'autonomous mapping':
             info.update(radius_m=ex.radius, dry_run=ex.dry, together=getattr(ex, 'wait_join', False))
@@ -144,10 +151,14 @@ class RunRecorder:
                         'events': open(os.path.join(d, 'events.jsonl'), 'w'),
                         'bag': bag, 'last': None, 'pose_at': 0.0, 'nav_pos': None, 'counts': {}, 'n_nav2': 0,
                         'map_at': 0.0, 'frame_at': 0.0, 'frames': 0, 'dist': 0.0, 'prev': None,
-                        'still': None, 'moved_at': time.monotonic(), 'warn': self._warn_counts(), 'warnings': 0}
+                        'still': None, 'moved_at': time.monotonic(), 'warn': self._warn_counts(), 'warnings': 0,
+                        'depth_at': 0.0, 'depth': 0}
         if what == 'navigation':
             self._copy_saved_map(self.run)
         self._camera(True)
+        dobs = getattr(self.node, 'depth_obs', None)
+        if dobs is not None:
+            dobs.on_frame = self._on_depth
         self.log.info(f'run recording started ({what}): {d}')
         self._prune()
 
@@ -157,6 +168,9 @@ class RunRecorder:
         if r is None:
             return
         self._camera(False)
+        dobs = getattr(self.node, 'depth_obs', None)
+        if dobs is not None:
+            dobs.on_frame = None
         self._tail_nav_log(r)
         if r['info']['kind'] != 'navigation':
             self._save_map(r)
@@ -177,7 +191,8 @@ class RunRecorder:
             self.log.info(f'run recording dropped (the car did not move): {r["dir"]}')
             return
         summary = {'id': r['id'], 'kind': r['info']['kind'], 'duration_s': round(duration),
-                   'distance_m': round(r['dist'], 2), 'frames': r['frames'], 'end_reason': reason,
+                   'distance_m': round(r['dist'], 2), 'frames': r['frames'], 'depth_frames': r['depth'],
+                   'end_reason': reason,
                    'warnings': r['warnings'], 'nav2_messages': r['n_nav2'],
                    'nav2_by_kind': dict(sorted(r['counts'].items(), key=lambda kv: -kv[1]))}
         if r['info']['kind'] == 'autonomous mapping':
@@ -287,6 +302,41 @@ class RunRecorder:
             if r['frames'] == 0:
                 self.log.warn(f'run recording: camera frame: {exc!r}')
                 r['frame_at'] = now + 30          # don't log this every second
+
+    def _on_depth(self, msg, floor, why):
+        """depth_obstacles.py, each processed depth frame: keep one every DEPTH_S (16-bit PNG, mm)."""
+        r = self.run
+        now = time.monotonic()
+        if r is None or now - r['depth_at'] < DEPTH_S:
+            return
+        r['depth_at'] = now
+        import cv2
+        import numpy as np
+        dd = os.path.join(r['dir'], 'depth')
+        if r['depth'] == 0:
+            dobs = self.node.depth_obs
+            fx, fy, cx, cy = dobs.K
+            k = DEPTH_STEP
+            self._write_json(dd, 'camera.json', {
+                'note': 'pixel (u, v) of these images = (k*u, k*v) of the camera; intrinsics below are for these',
+                'step': k, 'width': (msg.width + k - 1) // k, 'height': (msg.height + k - 1) // k,
+                'fx': fx / k, 'fy': fy / k, 'cx': cx / k, 'cy': cy / k, 'depth_unit_m': 0.001,
+                'R_optical_to_base': np.asarray(dobs.R).round(6).tolist(),
+                't_camera_in_base_m': np.asarray(dobs.t).round(4).tolist(), 'encoding': msg.encoding})
+        img = np.frombuffer(msg.data, dtype=np.uint16).reshape(msg.height, msg.step // 2)[:, :msg.width]
+        img = np.ascontiguousarray(img[::DEPTH_STEP, ::DEPTH_STEP])
+        ok, png = cv2.imencode('.png', img)
+        if not ok:
+            return
+        t = now - r['t0']
+        name = f'{t:06.1f}.png'
+        with open(os.path.join(dd, name), 'wb') as f:
+            f.write(png.tobytes())
+        with open(os.path.join(dd, 'index.jsonl'), 'a') as f:
+            f.write(json.dumps({'t': round(t, 2), 'file': name,
+                                'floor': None if floor is None else [round(float(v), 5) for v in floor],
+                                'why': why or None}) + '\n')
+        r['depth'] += 1
 
     # ---- while running -----------------------------------------------------------------
     def _write(self, r, ev):
