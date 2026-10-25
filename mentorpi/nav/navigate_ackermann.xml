@@ -1,6 +1,8 @@
 <!--
-  NavigateToPose for a car-like robot (no spin-in-place): replan every 4 s while following the path (at 1 Hz
-  each new plan could pick other forward / reverse switches: the car went back and forth);
+  NavigateToPose for a car-like robot (no spin-in-place). Once a second the path is checked against the global
+  costmap (IsPathValid); it is replanned at once when an obstacle is on it, else every 4 s (planning every
+  second let each new plan pick other forward / reverse switches: the car went back and forth). Pattern of
+  Nav2's nav_to_pose_with_consistent_replanning_and_if_path_becomes_invalid.xml;
   on failure clear the costmaps, wait, or back up a little, then try again (6 attempts).
   Based on nav2_bt_navigator's navigate_to_pose_w_replanning_and_recovery.xml (Humble).
 -->
@@ -8,9 +10,23 @@
   <BehaviorTree ID="MainTree">
     <RecoveryNode number_of_retries="6" name="NavigateRecovery">
       <PipelineSequence name="NavigateWithReplanning">
-        <RateController hz="0.25">
+        <RateController hz="1.0">
           <RecoveryNode number_of_retries="1" name="ComputePathToPose">
-            <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+            <Fallback name="KeepOrReplan">
+              <!-- keep the path while it is younger than 4 s, the goal is the same, and it still clears the
+                   global costmap (IsPathValid: no point of it on an obstacle or within the car's half width
+                   of one); otherwise plan again -->
+              <ReactiveSequence name="KeepPath">
+                <Inverter>
+                  <PathExpiringTimer seconds="4" path="{path}"/>
+                </Inverter>
+                <Inverter>
+                  <GlobalUpdatedGoal/>
+                </Inverter>
+                <IsPathValid path="{path}"/>
+              </ReactiveSequence>
+              <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+            </Fallback>
             <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
           </RecoveryNode>
         </RateController>

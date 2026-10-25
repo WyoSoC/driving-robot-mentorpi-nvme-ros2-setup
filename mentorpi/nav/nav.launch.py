@@ -27,11 +27,11 @@ RAW, SMOOTHED = '/nav/cmd_vel_raw', '/nav/cmd_vel_smoothed'
 def setup(context):
     map_yaml = LaunchConfiguration('map').perform(context)
     slam = LaunchConfiguration('slam').perform(context).lower() in ('true', '1')
-    params = PARAMS
+    params = LaunchConfiguration('params').perform(context) or PARAMS
     if slam:   # plan on the team map (published by the web server, same frame as this car's SLAM)
-        p = yaml.safe_load(open(PARAMS))
+        p = yaml.safe_load(open(params))
         p['global_costmap']['global_costmap']['ros__parameters']['static_layer']['map_topic'] = '/team/map'
-        params = '/tmp/nav2_params_team.yaml'
+        params = f'/tmp/nav2_params_team_{os.getuid()}.yaml'   # per user (a test runs as root)
         with open(params, 'w') as f:
             yaml.safe_dump(p, f)
     common = dict(output='screen', parameters=[params], respawn=False)
@@ -65,5 +65,6 @@ def generate_launch_description():
         SetEnvironmentVariable('RCUTILS_LOGGING_BUFFERED_STREAM', '1'),
         DeclareLaunchArgument('map', default_value='', description='map yaml (saved with the web UI Map panel)'),
         DeclareLaunchArgument('slam', default_value='false', description='true: navigate on the live SLAM map'),
+        DeclareLaunchArgument('params', default_value='', description='other parameter file (tests)'),
         OpaqueFunction(function=setup),
     ])

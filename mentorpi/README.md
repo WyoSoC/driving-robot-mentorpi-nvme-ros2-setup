@@ -573,7 +573,15 @@ map complete. In tight spots the steering also hunted: forward and reverse switc
     (`change_penalty` 0.3). On 12 goals on jpi2's live map: reverse driving 8.9 → 5.0 m, forward/reverse
     switches 27 → 25.
   - The path is replanned every 4 s instead of every second, so a new plan can't keep choosing
-    different forward/reverse switches.
+    different forward/reverse switches. In between it is checked once a second against the global costmap
+    (`IsPathValid`: no point on an obstacle or within the car's half width of one), and replanned at once
+    when it no longer clears. That follows Nav2's
+    `nav_to_pose_with_consistent_replanning_and_if_path_becomes_invalid.xml`. The car then curves round a
+    new obstacle early, instead of driving up to it, stopping ("collision ahead") and recovering.
+
+    Tested with the real Nav2 stack on its own ROS domain (`tests/run.sh test_replan.py`; nothing drives):
+    a made-up map, a goal straight across, then a wall put across the path. A plan around it came
+    1.1 s later; with only the 4 s timer, 4.1 s (3 runs each, same result).
 
 Tests: `tests/run.sh test_steering.py`, `tests/run.sh test_recovery.py`.
 
