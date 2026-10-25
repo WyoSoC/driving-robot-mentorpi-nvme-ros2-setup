@@ -7,7 +7,11 @@
 MAX_RSS_KB=${MAX_RSS_KB:-1000000}   # 1 GB (normal: ~80 MB)
 GRACE_S=180                         # give bringup time to start
 
-[ -e "$(dirname "$0")/../state/charging" ] && exit 0   # charging mode: robot software stopped on purpose
+S="$(dirname "$0")/../state"
+[ -e "$S/charging" ] && exit 0   # charging mode: robot software stopped on purpose
+# a charging-mode switch asked for or under way (it stops rosbridge first): restarting now would undo it
+grep -qx on "$S/charging_request" 2>/dev/null && exit 0
+systemctl is-active -q mentorpi-charging.service && exit 0
 systemctl is-active -q mentorpi-bringup || exit 0
 since=$(systemctl show mentorpi-bringup -p ActiveEnterTimestamp --value)
 [ -n "$since" ] && [ $(( $(date +%s) - $(date -d "$since" +%s) )) -ge $GRACE_S ] || exit 0
