@@ -33,6 +33,7 @@
   Nav2 (/bump/cloud), back out the other way, go on.
 - Lifted by hand (lift_detector.py, IMU): pause the mission and slam_toolbox's scan intake, mark the place it was
   driving to, go on when set down again.
+- Lidar odometry (lidar_odometry.py): rf2o_laser_odometry -> /odom_lidar (not fused into /odom yet: compare first).
 - Run recordings (run_recorder.py): every autonomous mapping run is recorded (timeline, Nav2 log, ros2 bag);
   GET /api/runs lists them.
 - Managing maps (Map panel -> Maps): POST /api/maps/rename?name=&to= | /api/maps/delete?name= (here, then on the
@@ -80,6 +81,7 @@ from scan_filter import ScanFilter
 from run_recorder import RunRecorder
 from stall_detector import StallDetector
 from lift_detector import LiftDetector
+from lidar_odometry import LidarOdometry
 from nav_manager import NavManager
 from peer_manager import PeerManager
 from slam_manager import SlamManager
@@ -145,6 +147,7 @@ class WebBridge(Node):
         self.shared = SharedMap(self, self.slam, self.nav, self.team, self.peers, CAR_NAME)   # one map for all
         self.team.shared = self.shared
         self.stall = StallDetector(self, self.slam.tf, self.explorer, self.nav, self.slam)   # motors on, car still
+        self.lidar_odom = LidarOdometry(self)       # rf2o: motion measured by the lidar -> /odom_lidar
         self.lift = LiftDetector(self, self.explorer, self.nav, self.slam, self.stall)       # picked up by hand
         self.depth_obs.hazards = self.stall                  # drops seen by the depth camera -> no-go marks
         self.depth_obs.on_drop_ahead = self.stall.drop_ahead
@@ -574,6 +577,7 @@ def main():
         node.nav.shutdown()
         node.peers.shutdown()
         node.slam.shutdown()
+        node.lidar_odom.stop()
         node.destroy_node()
         rclpy.try_shutdown()
 

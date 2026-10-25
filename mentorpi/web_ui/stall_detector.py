@@ -1,6 +1,7 @@
 """The car pushes against something (runs inside web_ui_server.py): the motors turn, the car doesn't move.
 
-The car has no wheel encoders (Hiwonder's /odom adds up the commanded speed, so it "moves" while jammed).
+ROS gets no wheel feedback (the motor encoders only feed the board's speed loop; /odom_raw, and so /odom,
+adds up the commanded speed), so in odometry the car "moves" while jammed.
 The lidar is the honest sign: driving, the distances ahead and behind change; jammed, they stay the same.
 
 Blocked = during a mission (autonomous mapping, a navigation goal, or the explorer's own escape move; not

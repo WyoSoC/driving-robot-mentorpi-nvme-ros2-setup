@@ -352,6 +352,38 @@ gyro +89, /imu +41, /odom -41). The heading is the gyro alone (`/odom_raw`'s tur
 heading at every stop: car 2, 23.8 m loop, EKF +27 deg vs gyro +9.5); parked it drifts ~1-2 deg/min,
 which SLAM corrects.
 
+**Lidar odometry** (`web_ui/lidar_odometry.py`): nothing above measures how far the car really went.
+The web server runs `rf2o_laser_odometry` while the sensors are on (not in charging mode). It
+estimates the motion from how consecutive lidar scans shift, and publishes it as `/odom_lidar`. It is
+**not fused** into `/odom` yet. Hiwonder's `ekf.yaml` already lists `/odom_rf2o` as an input, so
+publishing under that name would change SLAM's and navigation's odometry at once. It needs comparing
+first, and it is known to drift in plain corridors and go wrong while the car is carried. Parked on
+jpi1: 0.2 cm and 0.02° in 30 s. Run recordings include `/odom_lidar` and `/odom_raw`.
+
+rf2o reads `/scan_rf2o` (`scan_filter.for_rf2o`): the scan resampled to exactly 450 readings from −π
+to π. rf2o assumes the scan is centred on straight ahead, with a fixed size. On the MS200's 0..2π scan
+with 448–450 readings, its forward motion came out reversed (correlation with SLAM −0.94).
+
+Replayed jpi1's 9.3-minute autonomous-mapping run (2026-10-24 21:44) through it, against SLAM's
+corrected pose, per 5 s:
+
+| | `/odom` (commands + gyro) | `/odom_lidar` |
+|---|---|---|
+| position error while moving: median / 90 % | 12.6 / 30.0 cm | 11.0 / 22.9 cm |
+| heading error while moving: median / 90 % | 6.7 / 16.9° | 6.1 / 16.1° |
+| SLAM says standing: position error 90 % | 44.8 cm (moved in odometry, not really) | 1.4 cm |
+| path length (SLAM 53.6 m) | 55.9 m | 48.4 m |
+
+So it catches the car not moving when commanded to, and is a bit better while driving. It falls behind
+in distance (−10 %), and its output has gaps of over 0.5 s. A next step could fuse its speed into the EKF
+alongside the commanded speed.
+
+**Odometry panel:** green is `/odom`, purple is `/odom_lidar`, drawn from the same start point. The
+readout shows the lidar odometry's distance and how far apart the two ends are.
+- `+` / `−` (or the mouse wheel) zoom; **Fit** shows the whole trail and keeps fitting as it grows.
+- The grid adapts from 0.1 to 50 m, and up to 20,000 points (~400 m) are kept.
+- An rf2o restart (it starts from 0 again) starts a new purple segment instead of a jump.
+
 `motor_speed_map` ([real, sent, ...] m/s, measured by `speedmap`) corrects the motor commands so a
 commanded speed is the real speed and speed limits mean what they say (both cars: real = 0.89-0.98 x
 sent, steady up to 0.2 m/s). The motors (JGA27-310R, 20:1, 450 RPM) have encoders and the board runs
@@ -585,9 +617,10 @@ map complete. In tight spots the steering also hunted: forward and reverse switc
 
 Tests: `tests/run.sh test_steering.py`, `tests/run.sh test_recovery.py`.
 
-**Bumping into something** (`web_ui/stall_detector.py`): the motors turn but the car doesn't move. The car
-has no wheel encoders: Hiwonder's `/odom` adds up the commanded speed, so it "moves" while jammed. The
-lidar is the honest sign.
+**Bumping into something** (`web_ui/stall_detector.py`): the motors turn but the car doesn't move. The
+motor encoders only feed the board's speed loop; ROS gets no wheel feedback, and `/odom_raw` (so
+`/odom`) adds up the commanded speed: the car "moves" in odometry while jammed. The lidar is the honest
+sign.
 - **Blocked:** during a mission (autonomous mapping, a navigation goal, the escape move; not joystick
   driving) the motors were told to drive at ≥ 4 cm/s in one direction for 1.5 s, and the lidar ranges
   ahead and behind changed by less than 2.5 cm (median, compared per 1° direction: the MS200 sends 448
