@@ -132,6 +132,7 @@ Manual start without systemd (in this order):
 │   ├── run_recorder.py      records every autonomous mapping run (timeline, Nav2 log, bag)
 │   ├── stall_detector.py    motors on but the car doesn't move: stop, mark the spot, back out
 │   ├── lift_detector.py     picked up by hand (IMU): pause mission + SLAM, mark the place, resume
+│   ├── lidar_odometry.py    rf2o lidar odometry (/odom_lidar) and its averaged speed for the EKF
 │   ├── explore_manager.py   autonomous mapping (frontier exploration)
 │   ├── depth_obstacles.py   depth camera obstacles (/depth/scan) + comparison with the lidar
 │   ├── map_store.py         saved maps + content hash (same map on two cars?)
@@ -355,11 +356,13 @@ which SLAM corrects.
 
 **Lidar odometry** (`web_ui/lidar_odometry.py`): nothing above measures how far the car really went.
 The web server runs `rf2o_laser_odometry` while the sensors are on (not in charging mode). It
-estimates the motion from how consecutive lidar scans shift, and publishes it as `/odom_lidar`. It is
-**not fused** into `/odom` yet. Hiwonder's `ekf.yaml` already lists `/odom_rf2o` as an input, so
-publishing under that name would change SLAM's and navigation's odometry at once. It needs comparing
-first, and it is known to drift in plain corridors and go wrong while the car is carried. Parked on
-jpi1: 0.2 cm and 0.02° in 30 s. Run recordings include `/odom_lidar` and `/odom_raw`.
+estimates the motion from how consecutive lidar scans shift, and publishes it as `/odom_lidar`. Its
+raw output is deliberately not on `/odom_rf2o`. Hiwonder's `ekf.yaml` lists that name as an input, and
+rf2o's pose with zero covariance would have taken over the odometry. Only its averaged forward speed
+goes into the EKF (`/odom_lidar_speed`, below). It is known to drift in plain corridors and goes wrong
+while the car is carried. Parked on jpi1: 0.2 cm and 0.02° in 30 s. Run recordings include
+`/odom_lidar`, `/odom_raw`, `/odom_lidar_speed` and `/imu_corrected`, so a run can be replayed through
+the EKF.
 
 rf2o reads `/scan_rf2o` (`scan_filter.for_rf2o`): the scan resampled to exactly 450 readings from −π
 to π. rf2o assumes the scan is centred on straight ahead, with a fixed size. On the MS200's 0..2π scan
@@ -936,6 +939,27 @@ Main topics: `/odom` (nav_msgs/Odometry), `/imu`, `/imu/rpy/filtered`, `/scan_ra
 (LaserScan, 0.05–12 m), `/ascamera/camera_publisher/rgb0/image`,
 `/ascamera/camera_publisher/depth0/image_raw` (16UC1 mm), `/web/depth_color`,
 `/ros_robot_controller/battery` (UInt16 mV), `/joy`.
+
+### Sensor fusion: what combines what
+
+| Stage | Inputs | Method | Output |
+|---|---|---|---|
+| IMU calibration | raw accelerometer + gyro | `imu_calib` (bias and scale per car) | `/imu_corrected` |
+| IMU attitude | `/imu_corrected` | complementary filter (gyro integrated, gravity pulls roll/pitch back; adaptive gain, bias estimation, no magnetometer) | `/imu`: page attitude, `lift_detector` |
+| Lidar odometry | lidar scans (`/scan_rf2o`) | rf2o range flow (consecutive scans) | `/odom_lidar`; averaged forward speed `/odom_lidar_speed` (σ 2 cm/s) |
+| Odometry | commanded speed (`/odom_raw`), lidar forward speed, gyro turn rate | EKF (`robot_localization`, 2-D, 30 Hz; `system/patch_ekf.py`) | `/odom` and TF odom → base_footprint |
+| Mapping | lidar + `/odom` | slam_toolbox: scan matching + pose graph (loop closure) | map, TF map → odom |
+| Saved-map navigation | lidar + `/odom` + saved map | AMCL particle filter; started by `localize.py` (one scan matched against the whole map) | TF map → odom |
+| Obstacles | lidar (`/scan_nav`), depth camera (obstacles, drops), the other car, bump / lift / drop marks | Nav2 costmap layers, highest cost per cell | global and local costmaps |
+| Last-moment safety | lidar + depth points | collision monitor: the next 1.2 s of motion simulated with the car's rectangle | slowed `/nav/cmd_vel` |
+| Depth threat levels | depth image + a floor plane fitted to it | height grid per direction (`depth_obstacles.py`) | `/depth/scan`, `/depth/bumps`, `/depth/drops` |
+| Stuck against something | motor commands + lidar | motors on, lidar unchanged for 1.5 s (`stall_detector.py`) | stop, mark, back out |
+| Lifted / tipping | IMU orientation, vertical acceleration, gyro, motor commands | `lift_detector.py` | pause or back out, mark |
+| Two cars, one map | both cars' lidar keyframes and live maps | map alignment, then hit/pass counts per cell (`team.py`, `shared_map.py`) | identical shared map on every car |
+
+What is not measured: the motor encoders only feed the board's speed loop, so ROS sees no wheel
+motion. Distance comes from the commanded speed plus the lidar. Heading has no absolute reference (no
+magnetometer); SLAM corrects it.
 
 ---
 
