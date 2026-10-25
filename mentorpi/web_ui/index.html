@@ -227,7 +227,7 @@
   .readout div { background: var(--panel-2); border-radius: 6px; padding: 2px 6px; }
   .readout .k { color: var(--muted); font-size: 10px; }
   .readout .v { font-family: var(--mono); font-size: 12px; white-space: nowrap; }
-  .readout.row4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }   /* odometry: two even rows */
+  .readout.row3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }   /* odometry: two even rows */
   .readout.row7 { grid-template-columns: repeat(7, minmax(0, 1fr)); }   /* IMU: all in one row */
   .readout.row7 > div { padding: 2px 5px; min-width: 0; overflow: hidden; }
   .readout .k .u { opacity: .75; }
@@ -457,15 +457,13 @@
       <button class="btn odoz" id="odoFit" title="Show the whole trail (keeps fitting as it grows)">Fit</button>
       <button class="btn odoz" id="trailReset">Clear trail</button></span></h2>
     <canvas id="trail"></canvas>
-    <div class="readout row4">
+    <div class="readout row3">
       <div><div class="k">X</div><div class="v" id="oX">--</div></div>
       <div><div class="k">Y</div><div class="v" id="oY">--</div></div>
       <div><div class="k">Heading</div><div class="v" id="oYaw">--</div></div>
       <div><div class="k">Speed</div><div class="v" id="oV">--</div></div>
       <div><div class="k">Turn rate</div><div class="v" id="oW">--</div></div>
-      <div><div class="k" title="Green trail: /odom, the odometry (EKF of the commanded speed, the lidar's measured speed and the gyro), since the trail was cleared">Distance</div><div class="v" id="oDist">0.00 m</div></div>
-      <div><div class="k" title="Purple trail: distance by the lidar odometry alone (rf2o: motion measured from how the lidar scans shift), since the trail was cleared">Lidar distance</div><div class="v" id="oLid">--</div></div>
-      <div><div class="k" title="How far apart the ends of the two trails are: where the odometry (green) and the lidar odometry alone (purple) put the car now. Both started at the same point, so this is how far they have drifted apart since then">Odom vs lidar</div><div class="v" id="oGap">--</div></div>
+      <div><div class="k" title="Distance driven since the trail was cleared (the green trail: /odom, the EKF of the commanded speed, the lidar's measured speed and the gyro)">Distance</div><div class="v" id="oDist">0.00 m</div></div>
     </div>
   </section>
   </div>
@@ -1208,36 +1206,9 @@ ros.subscribe('/odom', 'nav_msgs/msg/Odometry', msg => {
   touch('odom', `${fmt(v)} m/s`);
   drawTrail();
 }, 100);
-// Lidar odometry (/odom_lidar, rf2o): its own start point; drawn from where /odom was when it was first seen
-// (or the trail was cleared), turned to /odom's heading then, so the two trails start together and any
-// difference between them shows.
-const odo = { scale: 80, fit: false, lidar: [], lidarDist: 0, anchor: null, lpose: null };
-ros.subscribe('/odom_lidar', 'nav_msgs/msg/Odometry', msg => {
-  const p = msg.pose.pose.position, q = msg.pose.pose.orientation;
-  const lyaw = Math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z));
-  if (!pose) return;
-  // rf2o restarted (it starts at 0 again): a jump of more than 0.5 m between messages. Start drawing from here.
-  if (odo.raw && Math.hypot(p.x - odo.raw.x, p.y - odo.raw.y) > 0.5) odo.anchor = null;
-  odo.raw = { x: p.x, y: p.y };
-  if (!odo.anchor) odo.anchor = { lx: p.x, ly: p.y, lyaw, ex: pose.x, ey: pose.y, eyaw: pose.yaw };
-  const a = odo.anchor, d = a.eyaw - a.lyaw, c = Math.cos(d), sn = Math.sin(d);
-  const dx = p.x - a.lx, dy = p.y - a.ly;
-  const x = a.ex + c * dx - sn * dy, y = a.ey + sn * dx + c * dy;
-  const last = odo.lidar[odo.lidar.length - 1];
-  if (last && Math.hypot(x - last.x, y - last.y) > 0.5) odo.lidar.push({ gap: true });   // re-anchored: no line across
-  if (!last || last.gap || Math.hypot(x - last.x, y - last.y) > 0.02) {
-    const prev = odo.lidar[odo.lidar.length - 1];
-    if (prev && !prev.gap) odo.lidarDist += Math.hypot(x - prev.x, y - prev.y);
-    odo.lidar.push({ x, y });
-    if (odo.lidar.length > 20000) odo.lidar.shift();
-  }
-  odo.lpose = { x, y };
-  $('oLid').textContent = `${odo.lidarDist.toFixed(2)} m`;
-  $('oGap').textContent = `${Math.hypot(x - pose.x, y - pose.y).toFixed(2)} m`;
-}, 100);
+const odo = { scale: 80, fit: false };   // Odometry view: zoom, or fit the whole trail
 $('trailReset').onclick = () => {
-  trail = pose ? [{ x: pose.x, y: pose.y }] : []; odomDist = 0;
-  odo.lidar = []; odo.lidarDist = 0; odo.anchor = null; drawTrail();
+  trail = pose ? [{ x: pose.x, y: pose.y }] : []; odomDist = 0; drawTrail();
 };
 function odoZoom(f) { odo.fit = false; odo.scale = Math.min(400, Math.max(4, odo.scale * f)); odoButtons(); drawTrail(); }
 function odoButtons() { $('odoFit').classList.toggle('on', odo.fit); }
@@ -1252,9 +1223,9 @@ function drawTrail() {
   // World view, x up (forward at start), y left. Follows the car, or (Fit) shows the whole trail.
   let scale = odo.scale, mx = pose.x, my = pose.y;
   if (odo.fit) {
-    const pts = trail.concat(odo.lidar, [{ x: pose.x, y: pose.y }]);
+    const pts = trail.concat([{ x: pose.x, y: pose.y }]);
     let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
-    for (const p of pts) { if (p.gap) continue; x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x); y0 = Math.min(y0, p.y); y1 = Math.max(y1, p.y); }
+    for (const p of pts) { x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x); y0 = Math.min(y0, p.y); y1 = Math.max(y1, p.y); }
     const m = 0.3;                                   // margin, m
     scale = Math.min(400, Math.max(4, Math.min(w / (y1 - y0 + 2 * m), h / (x1 - x0 + 2 * m))));
     mx = (x0 + x1) / 2; my = (y0 + y1) / 2;
@@ -1269,21 +1240,14 @@ function drawTrail() {
   const line = (pts, color) => {
     if (pts.length < 2) return;
     ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
-    let pen = false;                               // {gap: true} entries: lift the pen (rf2o restarted)
-    for (const p of pts) {
-      if (p.gap) { pen = false; continue; }
-      const [sx, sy] = toS(p.x, p.y);
-      if (pen) ctx.lineTo(sx, sy); else ctx.moveTo(sx, sy);
-      pen = true;
-    }
+    pts.forEach((p, i) => { const [sx, sy] = toS(p.x, p.y); i ? ctx.lineTo(sx, sy) : ctx.moveTo(sx, sy); });
     ctx.stroke();
   };
   line(trail, '#3fb950');
-  line(odo.lidar, '#d2a8ff');
   const [px, py] = toS(pose.x, pose.y);
   drawCar(ctx, px, py, -pose.yaw, Math.max(scale, 40));
   ctx.fillStyle = C.dim; ctx.font = '10px system-ui';
-  ctx.fillText(`grid ${g} m · green: odometry · purple: lidar odometry alone` + (odo.fit ? ' · fit' : ''), 6, h - 6);
+  ctx.fillText(`grid ${g} m · green: odometry (EKF)` + (odo.fit ? ' · fit' : ''), 6, h - 6);
 }
 
 // ---------- Battery / system ----------
