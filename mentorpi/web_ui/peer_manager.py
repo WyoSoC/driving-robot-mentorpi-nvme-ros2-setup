@@ -5,8 +5,9 @@ plan, map list). PeerManager asks each peer for it twice a second, at all times 
 the web server keeps running), and backs off to every 3 s while a peer is unreachable.
 
 Maps are kept in sync: every SYNC_S, any map an online peer has and this car doesn't (by content hash)
-is copied here (NAME, or NAME_<car> if a different map here already has that name). Deleting a map
-on one car only sticks if it is deleted on all cars.
+is copied here (NAME, or NAME_<car> if a different map here already has that name). A map deleted on
+any car (map_store.delete: its content hash is listed in that car's status, 'maps_deleted') is never
+copied back and is deleted here too, unless this car is navigating on it right now.
 
 Peers come from PEERS="host:port host:port" (start_web_ui.sh builds it from fleet.env, leaving out this
 car). Positions are in the peer's map frame: they only mean something here when both cars use the same
@@ -50,6 +51,7 @@ class PeerManager:
         self.peers = [Peer(a) for a in peers.split() if a]
         self.stop_evt = threading.Event()
         self.sync_note = ''
+        self.in_use = lambda name: False   # set by the web server: map in use by navigation
         for p in self.peers:
             threading.Thread(target=self._loop, args=(p,), daemon=True).start()
         if self.peers:
@@ -93,9 +95,18 @@ class PeerManager:
         for p in self.peers:
             if not p.online() or not p.status:
                 continue
+            gone = map_store.deleted()
+            for h in p.status.get('maps_deleted') or []:      # deleted on that car: delete here too
+                name = map_store.by_hash(h)
+                if name and not self.in_use(name):
+                    map_store.delete(name)
+                    self.log.info(f'map "{name}" deleted (deleted on {p.car})')
+                elif h not in gone and not name:
+                    map_store.remember_deleted(h, '?')
+            gone = map_store.deleted()
             have = {m['hash'] for m in map_store.listing()}
             for m in p.status.get('maps') or []:
-                if m.get('hash') in have or not map_store.NAME_RE.match(m.get('name', '')):
+                if m.get('hash') in have or m.get('hash') in gone or not map_store.NAME_RE.match(m.get('name', '')):
                     continue
                 try:
                     local = self.fetch_map(p.car, m['name'])
@@ -163,6 +174,8 @@ class PeerManager:
         local = {m['hash']: m['name'] for m in map_store.listing()}
         if want in local:
             return local[want]
+        if want in map_store.deleted():
+            raise ValueError(f'map "{name}" was deleted')
         target = name if name not in map_store.names() else f'{name}_{car}'[:40]
         if target in map_store.names():
             raise ValueError(f'a different map is already saved as "{target}"')

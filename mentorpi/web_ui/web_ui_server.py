@@ -28,6 +28,8 @@
   cars poll), GET /api/fleet = this car + the latest status of every other car, GET /api/maps = maps here
   and on the other cars, GET /api/maps/file?name=&ext=png|yaml (a map for another car to copy).
   A map of another car: GET /api/nav/map.png?name=&car=, POST /api/nav/start?map=&car= copies it here first.
+- Managing maps (Map panel -> Maps): POST /api/maps/rename?name=&to= | /api/maps/delete?name= (here, then on the
+  other online cars, found there by content; deletions also reach cars that were offline, see peer_manager.py).
 - Merging maps (map_merge.py): POST /api/maps/align?a=&b= lines map b up with map a (rotation + shift,
   ~3 s) and says whether they match; GET /api/maps/merge.png?a=&b= = overlay picture; POST
   /api/maps/merge?a=&b=&name= saves the combined map (only for a good match).
@@ -124,6 +126,7 @@ class WebBridge(Node):
         self.depth_obs = DepthObstacles(self, self.slam.tf)   # /depth/scan + /depth/compare
         self.explorer = Explorer(self, self.slam, self.nav, CAR_NAME)
         self.peers = PeerManager(CAR_NAME, PEERS, self.get_logger())
+        self.peers.in_use = self.map_in_use
         self.team = Team(self, self.slam, self.peers, CAR_NAME)      # mapping together
         self.explorer.team = self.team
         self.fleet = Fleet(self, self.slam.tf, self.nav, self.peers, CAR_NAME, self.team)
@@ -131,6 +134,46 @@ class WebBridge(Node):
         self.team.shared = self.shared
         self.merge_lock = threading.Lock()
         self.merge_cache = {}      # (hash a, hash b) -> align result
+
+    def map_in_use(self, name):
+        return self.nav.running() and self.nav.map_name == name
+
+    def manage_map(self, action, q):
+        """Rename / delete a saved map here, then on the other online cars (found there by content).
+        q: name (here) or hash (from another car, local=1: don't pass it on); to (rename)."""
+        name = q.get('name') or (map_store.by_hash(q.get('hash', '')) if q.get('hash') else None)
+        if not name:
+            if q.get('local') == '1':          # another car's map that isn't here: nothing to do
+                if action == 'delete' and q.get('hash'):
+                    map_store.remember_deleted(q['hash'], '?')
+                return True, 'not here'
+            return False, 'no such map'
+        if self.map_in_use(name):
+            return False, f'"{name}" is in use by navigation: stop navigation first'
+        h = map_store.meta(name)['hash']
+        if action == 'rename':
+            map_store.rename(name, q.get('to', ''))
+            msg = f'renamed "{name}" to "{q["to"]}"'
+        else:
+            map_store.delete(name)
+            msg = f'deleted "{name}"'
+        self.get_logger().info(f'map {msg}' + (' (asked by another car)' if q.get('local') == '1' else ''))
+        if q.get('local') == '1':
+            return True, msg
+        notes = []
+        for p in self.peers.summary():
+            if not p['online']:
+                notes.append(f'{p["car"]} offline' + (': deleted there when it is back online' if action == 'delete'
+                                                       else ': keeps the old name'))
+                continue
+            try:
+                extra = {'to': q['to']} if action == 'rename' else {}
+                j = json.loads(self.peers.post(p['car'], f'/api/maps/{action}', timeout=5.0, hash=h, local=1, **extra))
+                notes.append(f'{p["car"]}: {j.get("message", "")}' if j.get('ok') else
+                             f'{p["car"]}: NOT done ({j.get("message", "")})')
+            except Exception as exc:
+                notes.append(f'{p["car"]}: no answer ({exc})')
+        return True, msg + (' · ' + '; '.join(notes) if notes else '')
 
     def team_forward(self, action, modes, **query):
         """Start / stop exploring on the other online cars in one of `modes` (mapping together)."""
@@ -190,6 +233,7 @@ class WebBridge(Node):
             'slam_pose': self.slam.pose if slam_on else None,
             'shared': {k: v for k, v in self.shared.status().items() if k in ('joined', 'leader', 'hash', 'frames')},
             'maps': [{k: m[k] for k in ('name', 'hash', 'resolution', 'origin')} for m in map_store.listing()],
+            'maps_deleted': list(map_store.deleted()),
         }
 
     def read_charging_mode(self):
@@ -374,6 +418,13 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
             except OSError as exc:
                 return self._send(500, {'ok': False, 'message': f'cannot write request: {exc}'})
             return self._send(200, {'ok': True})
+        if url.path in ('/api/maps/rename', '/api/maps/delete'):
+            q = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
+            try:
+                ok, msg = self.node.manage_map(url.path.rsplit('/', 1)[1], q)
+            except (ValueError, OSError) as exc:
+                ok, msg = False, str(exc)
+            return self._send(200 if ok else 400, {'ok': ok, 'message': msg})
         if url.path in ('/api/maps/align', '/api/maps/merge'):
             q = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
             try:

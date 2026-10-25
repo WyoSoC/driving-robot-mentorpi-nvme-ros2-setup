@@ -263,7 +263,7 @@
       <kbd>Space</kbd> = E-stop. The car stops if this page loses connection.</div>
   </section>
   <section class="panel" id="mapPanel">
-    <h2>Map <span class="right"><span class="tabs" id="mapTabs"><button data-mode="slam" class="active">Mapping</button><button data-mode="nav">Navigate</button><button data-mode="merge">Merge</button></span>
+    <h2>Map <span class="right"><span class="tabs" id="mapTabs"><button data-mode="slam" class="active">Mapping</button><button data-mode="nav">Navigate</button><button data-mode="merge">Merge</button><button data-mode="maps">Maps</button></span>
       <span class="pill" id="slamState"></span></span></h2>
     <div class="slam-bar" id="navBar" hidden>
       <select id="navMap" title="Saved maps on this car and on the other cars (copied here when navigation starts)"></select>
@@ -274,6 +274,13 @@
       <button class="btn" id="navGoTo" title="Click the destination, drag in the direction to arrive">🎯 Go to</button>
       <button class="btn" id="navCancel">Cancel goal</button>
       <span class="slam-info" id="navMsg"></span>
+    </div>
+    <div class="slam-bar" id="mapsBar" hidden>
+      <select id="mapsSel" title="Saved maps on this car (the other cars have the same ones: maps are synced)"></select>
+      <input id="mapsName" placeholder="new name" maxlength="40">
+      <button class="btn" id="mapsRename">Rename</button>
+      <button class="btn" id="mapsDelete">Delete</button>
+      <span class="slam-info" id="mapsMsg"></span>
     </div>
     <div class="slam-bar" id="mergeBar" hidden>
       <select id="mergeA" title="Base map: the merged map keeps its position and direction"></select>
@@ -289,12 +296,12 @@
       <button class="btn" id="slamStop">Stop</button>
       <input id="slamName" placeholder="map name" maxlength="40">
       <button class="btn" id="slamSave">Save map</button>
-      <select id="exploreRadius" title="Exploration stays within this distance of where it starts">
+      <select id="exploreRadius" title="Autonomous mapping stays within this distance of where it starts">
         <option value="3">≤ 3 m</option><option value="5" selected>≤ 5 m</option><option value="8">≤ 8 m</option><option value="0">no limit</option>
       </select>
-      <button class="btn" id="exploreStart" title="Map by itself: drive to the edges of the map until none are left, return, save">🧭 Explore</button>
+      <button class="btn" id="exploreStart" title="The car maps by itself: drives to the edges of the map until none are left, returns, saves">🧭 Autonomous mapping</button>
       <label class="slam-info" id="exploreTeamWrap" hidden title="Start (and stop) the other cars too: they map the same space together, splitting the unmapped edges. Start them near each other (they see the same walls): they map in place until their maps line up, then split up."><input type="checkbox" id="exploreTeam"> together</label>
-      <button class="btn" id="exploreStop">Stop exploring</button>
+      <button class="btn" id="exploreStop">Stop autonomous mapping</button>
       <span class="slam-info" id="slamMsg"></span>
     </div>
     <canvas id="slamMap"></canvas>
@@ -978,20 +985,20 @@ $('slamStart').onclick = () => slamApi('start');
 $('exploreStart').onclick = async () => {
   const r = $('exploreRadius').value, team = $('exploreTeam').checked && !$('exploreTeamWrap').hidden;
   const others = fleet.peers.filter(p => p.online && p.status && p.status.mode === 'idle').map(p => p.car);
-  if (!confirm((team ? `Start exploring TOGETHER with ${others.join(', ') || '(no idle car online!)'}?\n\nALL these cars drive` +
-               ' by themselves' : 'Start exploring?\n\nThe car drives by itself') + ' (≤ 0.2 m/s) to map the area' +
+  if (!confirm((team ? `Start autonomous mapping TOGETHER with ${others.join(', ') || '(no idle car online!)'}?\n\nALL these cars drive` +
+               ' by themselves' : 'Start autonomous mapping?\n\nThe car drives by itself') + ' (≤ 0.2 m/s) to map the area' +
                (r !== '0' ? ` within ${r} m of where it is now` : '') + ', then returns and saves the map.\n\n' +
                'It CANNOT see drops: block stairs and ledges, or keep the distance small.\n' +
-               'Stay nearby. E-STOP, the joystick or "Stop exploring" stops it.')) return;
+               'Stay nearby. E-STOP, the joystick or "Stop autonomous mapping" stops it.')) return;
   const j = await (await fetch(`/api/explore/start?radius=${r}` + (team ? '&team=1' : ''), { method: 'POST' })).json().catch(() => ({}));
   $('slamMsg').textContent = j.message || '';
-  if (j.message) log(`Explore: ${j.message}`);
+  if (j.message) log(`Autonomous mapping: ${j.message}`);
   slamPoll();
 };
 $('exploreStop').onclick = async () => {
   const team = $('exploreTeam').checked && !$('exploreTeamWrap').hidden;
   const j = await (await fetch('/api/explore/stop' + (team ? '?team=1' : ''), { method: 'POST' })).json().catch(() => ({}));
-  if (j.message) log(`Explore: ${j.message}`);
+  if (j.message) log(`Autonomous mapping: ${j.message}`);
   slamPoll();
 };
 let exploreLast = '';
@@ -1018,7 +1025,7 @@ async function slamPoll() {
   $('exploreStop').disabled = !ex.active; $('exploreRadius').disabled = !!ex.active;
   $('exploreTeamWrap').hidden = !fleet.peers.length;
   if (ex.message && ex.message !== exploreLast) {
-    exploreLast = ex.message; log(`Explore: ${ex.message}`); $('slamMsg').textContent = ex.message;
+    exploreLast = ex.message; log(`Autonomous mapping: ${ex.message}`); $('slamMsg').textContent = ex.message;
   }
   if (mapMode === 'slam' && ex.active) {
     $('slamState').textContent = `${ex.state} ${ex.elapsed_s != null ? Math.floor(ex.elapsed_s / 60) + ':' + String(ex.elapsed_s % 60).padStart(2, '0') : ''}`;
@@ -1057,6 +1064,7 @@ async function slamPoll() {
 function drawSlam() {
   if (mapMode === 'nav') return drawNav();
   if (mapMode === 'merge') return drawMerge();
+  if (mapMode === 'maps') return drawMaps();
   const { ctx, w, h } = prepCanvas($('slamMap'));
   const st = slam.st, m = st && st.map, img = slam.img;
   if (!m || !img) {
@@ -1166,8 +1174,9 @@ function setMapMode(m) {
   mapMode = m;
   for (const b of $('mapTabs').children) b.classList.toggle('active', b.dataset.mode === m);
   $('slamBar').hidden = m !== 'slam'; $('navBar').hidden = m !== 'nav'; $('mergeBar').hidden = m !== 'merge';
+  $('mapsBar').hidden = m !== 'maps';
   setTool(null);
-  if (m === 'nav') navPoll(); else if (m === 'merge') mergeLists(); else slamPoll();
+  if (m === 'nav') navPoll(); else if (m === 'merge') mergeLists(); else if (m === 'maps') mapsList(); else slamPoll();
   drawSlam();
 }
 $('mapTabs').addEventListener('click', e => { if (e.target.dataset.mode) setMapMode(e.target.dataset.mode); });
@@ -1196,6 +1205,7 @@ $('navMap').onchange = () => { nav.preview = null; drawNav(); navPreview(); };
 async function mapsPoll() {
   try { nav.maps = (await (await fetch('/api/maps')).json()).maps || []; } catch { return; }
   mergeLists();
+  mapsList();
   navPoll();
 }
 setInterval(mapsPoll, 5000); mapsPoll();
@@ -1255,6 +1265,76 @@ $('mergeSave').onclick = async () => {
   if (j.message) log(`Merge: ${j.message}`);
   if (j.ok) mapsPoll();
 };
+// ---------- Managing saved maps (rename, delete; map_store.py) ----------
+// Maps are synced between the cars: a rename or delete here is done on the other cars too.
+const mm = { img: null, key: null };
+function mapsList() {
+  const sel = $('mapsSel'), keep = sel.value;
+  const local = nav.maps.filter(m => m.local);
+  const sig = local.map(m => m.name + m.hash).join();
+  if (sel.dataset.sig !== sig) {
+    sel.dataset.sig = sig;
+    sel.innerHTML = local.length ? local.map(m => {
+      const d = m.saved ? new Date(m.saved * 1000) : null;
+      const when = d ? ` · ${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : '';
+      const size = m.size_m ? ` · ${m.size_m[0]} × ${m.size_m[1]} m` : '';
+      return `<option value="${esc(m.name)}">${esc(m.name)}${size}${when}</option>`;
+    }).join('') : '<option value="">(no saved maps)</option>';
+    sel.value = local.some(m => m.name === keep) ? keep : (local[0] ? local[0].name : '');
+  }
+  const m = local.find(x => x.name === sel.value);
+  const used = nav.st && nav.st.running && nav.st.map_name === sel.value;
+  $('mapsRename').disabled = $('mapsDelete').disabled = !m || used;
+  if (mapMode === 'maps') {
+    $('slamInfo').textContent = `${local.length} saved map${local.length === 1 ? '' : 's'} on this car. ` +
+      'Maps are synced between the cars: renaming or deleting here does the same on the other cars.' +
+      (used ? ` "${sel.value}" is in use by navigation: stop navigation to rename or delete it.` : '');
+    $('slamState').textContent = '';
+    if (m && mm.key !== m.name + m.hash) {
+      const key = m.name + m.hash, img = new Image();
+      img.onload = () => { if (mm.key === key) { mm.img = img; drawMaps(); } };
+      mm.key = key; mm.img = null;
+      img.src = `/api/nav/map.png?name=${encodeURIComponent(m.name)}&h=${m.hash}`;
+    }
+    if (!m) { mm.key = mm.img = null; drawMaps(); }
+  }
+}
+$('mapsSel').onchange = () => { $('mapsMsg').textContent = ''; $('mapsName').value = ''; mapsList(); };
+async function mapsAction(action, query) {
+  let j;
+  try {
+    const r = await fetch(`/api/maps/${action}?${query}`, { method: 'POST' });
+    j = await r.json().catch(() => ({ message: r.statusText }));
+  } catch (e) { j = { message: `request failed: ${e}` }; }
+  $('mapsMsg').textContent = j.message || '';
+  if (j.message) log(`Maps: ${j.message}`);
+  await mapsPoll();
+  return j;
+}
+$('mapsRename').onclick = async () => {
+  const name = $('mapsSel').value, to = $('mapsName').value.trim();
+  if (!name) return;
+  if (!/^[A-Za-z0-9_-]{1,40}$/.test(to)) { $('mapsMsg').textContent = 'new name: 1-40 letters, digits, - or _'; return; }
+  const j = await mapsAction('rename', `name=${encodeURIComponent(name)}&to=${encodeURIComponent(to)}`);
+  if (j.ok) { $('mapsSel').dataset.sig = ''; mapsList(); $('mapsSel').value = to; $('mapsName').value = ''; mapsList(); }
+};
+$('mapsDelete').onclick = async () => {
+  const name = $('mapsSel').value;
+  if (!name || !confirm(`Delete map "${name}"?\n\nIt is deleted on the other cars too, and cannot be undone.`)) return;
+  await mapsAction('delete', `name=${encodeURIComponent(name)}`);
+};
+function drawMaps() {
+  const { ctx, w, h } = prepCanvas($('slamMap'));
+  const img = mm.img;
+  if (!img) {
+    ctx.fillStyle = C.dim; ctx.font = '13px system-ui';
+    ctx.fillText(mm.key ? 'Loading map…' : 'No saved maps', 12, 22);
+    return;
+  }
+  const k = Math.min(w / img.width, h / img.height);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(themedMap(img), (w - img.width * k) / 2, (h - img.height * k) / 2, img.width * k, img.height * k);
+}
 function drawMerge() {
   const { ctx, w, h } = prepCanvas($('slamMap'));
   const img = merge.img;

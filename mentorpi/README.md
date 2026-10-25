@@ -376,10 +376,26 @@ bringup.
 ### Map (SLAM)
 
 The web UI's **Map** panel runs lidar SLAM (`slam_toolbox`, Hiwonder's `slam/config/slam.yaml`)
-next to the running system: **Start mapping**, drive slowly (≤ 0.3 m/s) and pass your start point
-again now and then so loops close, then **Save map**. Maps are saved per car in
-`~/mentorpi/maps/` (`NAME.pgm/.yaml` for navigation, `NAME.posegraph/.data` to continue mapping)
-and are not transferred to other cars. The page shows the map rendered on the car (`/api/slam`).
+next to the running system. Its tabs:
+
+- **Mapping:**
+  - **Start mapping** only builds the map: the car does not move by itself. Drive it with the joystick,
+    slowly (≤ 0.3 m/s), and pass your start point again now and then so loops close.
+  - **Save map** saves it under a name.
+  - **🧭 Autonomous mapping** lets the car drive and map by itself (below), alone or **together** with
+    the other cars.
+- **Navigate:** drive to a goal on a saved map (Navigation, below).
+- **Merge:** line up two maps of the same place and save them as one.
+- **Maps:** the saved maps on this car, with size and date and a preview. **Rename** or **Delete**
+  one. Maps are synced between the cars: renaming or deleting does the same on the other online cars,
+  found there by content. A deleted map is listed in this car's status, so the sync never copies it
+  back, and a car that was offline deletes its copy when it comes back. A map that navigation is
+  using can't be renamed or deleted. API: `POST /api/maps/rename?name=&to=`,
+  `POST /api/maps/delete?name=`. Test: `tests/run.sh test_maps.py`.
+
+Maps are saved in `~/mentorpi/maps/`: `NAME.png/.yaml` for navigation, plus `NAME.posegraph/.data`
+(slam_toolbox's pose graph) when saved while mapping. Any map one car has and another lacks is copied
+over within 30 s (`peer_manager.py`).
 
 ---
 
@@ -473,7 +489,7 @@ no readings from glossy floors at all, so it can't detect drops reliably yet.
 
 ### Exploration (the car maps by itself)
 
-Map panel, **Mapping** mode: pick a distance limit (3, 5 or 8 m, or none) and press **🧭 Explore**.
+Map panel, **Mapping** mode: pick a distance limit (3, 5 or 8 m, or none) and press **🧭 Autonomous mapping**.
 The car then works like this (`web_ui/explore_manager.py`):
 
 1. It starts mapping (if mapping isn't already running) and navigation on the live map
@@ -490,7 +506,7 @@ How goals are chosen and checked:
 - The planner never plans through unmapped space.
 - A goal that fails, or takes more than 2 minutes, is blacklisted. After 6 failures in a row it gives up.
 
-**Stop exploring**, the E-STOP, the joystick, Cancel, charging mode, low battery or the 20-minute
+**Stop autonomous mapping**, the E-STOP, the joystick, Cancel, charging mode, low battery or the 20-minute
 limit each stop it. Navigation then stops and mapping keeps running, so the map can be saved.
 
 **Drops (stairs, ledges) are not detected.** The lidar scans a flat plane 12–15 cm high and sees over
@@ -500,8 +516,8 @@ safe area.
 
 ### Mapping together (two cars explore at once)
 
-Tick **together** next to 🧭 Explore. Every other online car that is idle starts exploring too, and
-**Stop exploring** stops them all. The cars can start anywhere, facing any way, near each other or in
+Tick **together** next to 🧭 Autonomous mapping. Every other online car that is idle starts too, and
+**Stop autonomous mapping** stops them all. The cars can start anywhere, facing any way, near each other or in
 different rooms. `web_ui/team.py` does the rest:
 
 - **Before their maps overlap** each car explores on its own; its lidar and depth camera see the other
@@ -567,7 +583,7 @@ shared map had cleared was still in the live lidar view, so the controller stopp
 ("collision ahead"), and the cars went back and forth. Before the maps are lined up, each car maps on its own.
 
 **Starting in a new place** (no saved map at all): put the cars near each other, so their first scans
-see the same walls; any direction, a few metres apart is fine. Tick **together** and start exploring.
+see the same walls; any direction, a few metres apart is fine. Tick **together** and start autonomous mapping.
 Each car maps in place until the shared map has joined ("waiting for the other car's map to line up",
 30 s at most; usually ~10 s), then they go their separate ways, already on one map. A match that was
 confirmed is kept while the maps grow apart: then only walls have to agree and not clash, without the
