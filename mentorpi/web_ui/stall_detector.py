@@ -155,16 +155,22 @@ class StallDetector:
 
     def _mark(self, direction):
         """Obstacle marks along the pushing bumper, in the map frame."""
+        self.mark_ahead(direction, MARK_AHEAD, MARK_AHEAD, g.HALF_WIDTH)
+
+    def mark_ahead(self, direction, near, far, half_w):
+        """No-go marks (map frame) from `near` to `far` m past the bumper on the driving side (+1 front,
+        -1 back), `half_w` to each side. Also used by lift_detector.py."""
         try:
             t = self.tf.lookup_transform('map', 'base_footprint', Time())
         except Exception:
             return
         tr, q = t.transform.translation, t.transform.rotation
         yaw = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
-        x = g.FRONT + MARK_AHEAD if direction > 0 else g.BACK - MARK_AHEAD
         c, s = math.cos(yaw), math.sin(yaw)
-        for y in np.arange(-g.HALF_WIDTH, g.HALF_WIDTH + 1e-6, MARK_STEP):
-            self.marks.append([tr.x + c * x - s * y, tr.y + s * x + c * y])
+        for d in np.arange(near, far + 1e-6, MARK_STEP):
+            x = g.FRONT + d if direction > 0 else g.BACK - d
+            for y in np.arange(-half_w, half_w + 1e-6, MARK_STEP):
+                self.marks.append([tr.x + c * x - s * y, tr.y + s * x + c * y])
 
     def publish(self):
         """The marks as a cloud in base_footprint (like fleet.py), for Nav2's bump_layer."""

@@ -54,6 +54,10 @@ STUCK_S = 40             # s without moving STUCK_M and without mapping GAIN_STE
 STUCK_M = 0.15
 GAIN_OK = 0.5            # m2 newly mapped while going for a goal: the attempt was useful
 GAIN_STEP = 0.2          # m2 newly mapped counts as progress (not stuck)
+PLAN_TOP = 5             # the best frontiers by straight-line score get a real plan (route_cost) ...
+PLAN_BUDGET_S = 8.0      # ... within this time
+REV_COST = 2.0           # m extra per m the route drives in reverse (the car can't see behind)
+CUSP_COST = 1.0          # m extra per forward / reverse switch on the route
 TURN_COST = 0.8          # m of extra distance per radian the car must turn towards a goal
 FAILED_FRONTIER_R = 0.8  # m, frontiers whose centre is this close to a failed one are skipped
 MAX_FAILS = 6            # failed goals in a row -> give up
@@ -158,7 +162,10 @@ def frontier_goals(grid, res, origin, car_xy, fence_xy, radius, blacklist, faile
         score[~ok] = np.inf
         i = int(np.argmin(score))
         x, y = float(gx[i]), float(gy[i])
-        yaw = math.atan2(cy - y, cx - x)              # face the unmapped space
+        # arrive the way the car naturally comes in (from where it is), not facing the unmapped space: the lidar
+        # sees all round, and a fixed final heading made the planner add turns / reversing near the goal
+        yaw = math.atan2(y - car_xy[1], x - car_xy[0]) if math.hypot(y - car_xy[1], x - car_xy[0]) > 0.3 \
+            else (car_yaw if car_yaw is not None else math.atan2(cy - y, cx - x))
         turn = 0.0
         if car_yaw is not None:
             d = math.atan2(y - car_xy[1], x - car_xy[0]) - car_yaw
@@ -177,6 +184,22 @@ def frontier_goals(grid, res, origin, car_xy, fence_xy, radius, blacklist, faile
     # best first: close, ahead of the car, large
     out.sort(key=lambda f: f['dist'] + TURN_COST * f['turn'] - 0.5 * min(f['size'], 3.0) + SHARE_COST * f['share'])
     return out, cells
+
+
+def route_cost(path):
+    """Planned path [[x, y, yaw], ...] -> {'length', 'reverse', 'cusps', 'cost'} (cost in m: length plus
+    REV_COST per m in reverse plus CUSP_COST per forward / reverse switch)."""
+    p = np.asarray(path, dtype=float)
+    if len(p) < 2:
+        return {'length': 0.0, 'reverse': 0.0, 'cusps': 0, 'cost': 0.0}
+    d = np.diff(p[:, :2], axis=0)
+    seg = np.hypot(d[:, 0], d[:, 1])
+    mv = seg > 1e-4
+    fwd = (d[:, 0] * np.cos(p[:-1, 2]) + d[:, 1] * np.sin(p[:-1, 2]))[mv] > 0
+    length, reverse = float(seg.sum()), float(seg[mv][~fwd].sum())
+    cusps = int(np.sum(fwd[1:] != fwd[:-1]))
+    return {'length': round(length, 2), 'reverse': round(reverse, 2), 'cusps': cusps,
+            'cost': round(length + REV_COST * reverse + CUSP_COST * cusps, 2)}
 
 
 class Explorer:
@@ -210,6 +233,8 @@ class Explorer:
         self.scan = None
         self.escapes = 0
         self.unreached = 0
+        self.rejected = 0
+        self.lifted = False        # lift_detector: the car is being carried
         self.recovering = False    # Back out while not exploring
         self.backout_req = False   # Back out asked for while exploring
         self.bump_req = 0          # stall_detector: pushed against something ahead (+1) / behind (-1)
@@ -246,6 +271,7 @@ class Explorer:
             self.goal_center = None
             self.reached = self.partial = self.failed = 0
             self.escapes = self.unreached = 0
+            self.rejected = 0
             self.send_xy = None
             self.fails = self.empty_checks = self.quick_retries = 0
             self.goal_sent_at = None
@@ -255,6 +281,25 @@ class Explorer:
             self.message = 'starting mapping and navigation (~30 s)'
             self.log.info(f'exploration started (radius {radius or "unlimited"} m)')
             return True, self.message
+
+    def on_lifted(self, note):
+        """lift_detector.py: the car was picked up. Drop the goal, wait until it is set down."""
+        self.lifted = True
+        self.recovering = False
+        if self.active():
+            if self.goal is not None or self.nav.goal_active():
+                self.own_cancel = True
+                self.nav.cancel('lifted')
+                self.goal = None
+            self.message = note
+
+    def on_put_down(self):
+        self.lifted = False
+        if self.active():
+            self.progress_at = time.monotonic()
+            self.message = 'set down again: going on'
+            if self.state == 'returning':
+                self._send(self.home)
 
     def bumped(self, direction, note):
         """stall_detector.py: the car pushed against something (direction +1 ahead / -1 behind) and the motors
@@ -386,7 +431,7 @@ class Explorer:
     def _drive_ok(self, direction_deg, body):
         """False when someone drives with the joystick, exploring / Back out stopped, the car just bumped into
         something (stall_detector.py), or an obstacle is close."""
-        if not self._may_drive() or time.monotonic() - self.blocked_at < 1.0:
+        if not self._may_drive() or self.lifted or time.monotonic() - self.blocked_at < 1.0:
             return False
         if time.monotonic() - self.node.last_cmd_time < 1.0 and self.node.moving:
             return False
@@ -460,9 +505,9 @@ class Explorer:
         back, front = self._clearance(180), self._clearance(0)
         body = car_geometry.BUMPER          # lidar centre -> front / rear bumper
         options = [(c - body[d], d) for c, d in ((back, 180), (front, 0)) if c is not None]
-        options = [o for o in options if o[0] >= ESCAPE_CLEAR]
+        options = [o for o in options if o[0] >= ESCAPE_CLEAR and self._known_free(o[1], ESCAPE_M + 0.10)]
         if not options:
-            self.log.info(f'escape: no room (behind {back}, ahead {front})')
+            self.log.info(f'escape: no room or not mapped (behind {back}, ahead {front})')
             return False
         if prefer is not None and any(d == prefer for _, d in options):
             room, direction = next(o for o in options if o[1] == prefer)
@@ -498,6 +543,26 @@ class Explorer:
         self.log.info(f'escape done: moved {moved:.2f} m')
         return moved > 0.05
 
+    def _known_free(self, direction_deg, dist):
+        """Is the strip the car would sweep driving `dist` m straight ahead (0) or back (180) mapped as free on
+        its own map? The escape never drives into unmapped space (behind the car at the start: usually a wall)."""
+        g, pose = self._grid(own=True), self.slam.pose
+        if g is None or pose is None:
+            return False
+        grid, res, origin = g
+        sign = 1.0 if direction_deg == 0 else -1.0
+        start = car_geometry.FRONT if sign > 0 else -car_geometry.BACK
+        c, s_ = math.cos(pose[2]), math.sin(pose[2])
+        h, w = grid.shape
+        for along in np.arange(start, start + dist + 1e-6, res / 2):
+            for across in (-car_geometry.HALF_WIDTH, 0.0, car_geometry.HALF_WIDTH):
+                bx, by = sign * along, across
+                x, y = pose[0] + c * bx - s_ * by, pose[1] + s_ * bx + c * by
+                col, row = int((x - origin[0]) / res), int((y - origin[1]) / res)
+                if not (0 <= row < h and 0 <= col < w) or not (0 <= grid[row, col] < FREE_MAX):
+                    return False
+        return True
+
     def _known_m2(self):
         g = self._grid(own=True)
         if g is None:
@@ -529,6 +594,8 @@ class Explorer:
             return self.stop('mapping stopped')
         if now - self.started_at > MAX_TIME:
             return self.stop(f'time limit ({MAX_TIME // 60} min)')
+        if self.lifted:                                       # carried by a person (lift_detector): wait
+            return
         if self.bump_req and self.state != 'starting':         # pushed against something (stall_detector)
             direction, self.bump_req = self.bump_req, 0
             if self.goal is not None or self.nav.goal_active():
@@ -617,7 +684,14 @@ class Explorer:
                     self.goal = None
                 else:   # the person at the controls (joystick / E-stop / Cancel goal)
                     return self.stop('stopped by you')
-            elif gs in ('aborted', 'rejected'):
+            elif gs == 'rejected':      # navigation not accepting goals yet: not a tight spot, try again
+                self.goal = None
+                self.rejected += 1
+                if self.rejected >= 20:
+                    return self.stop('navigation keeps rejecting goals')
+                self.message = 'navigation not ready yet, trying again'
+                return
+            elif gs == 'aborted':
                 moved = pose is not None and self.send_xy is not None and \
                     math.hypot(pose[0] - self.send_xy[0], pose[1] - self.send_xy[1]) > STUCK_M
                 stuck_here = not moved and self._known_m2() - self.known_at_send < GAIN_OK
@@ -665,7 +739,7 @@ class Explorer:
                 self._send(self.home)
             return
         self.empty_checks = 0
-        f = fronts[0]
+        f = self._choose(fronts)
         self.goal_center = f['center']
         if self.dry:
             self.message = f'dry run: would go to {f["goal"]} ({len(fronts)} frontiers)'
@@ -673,6 +747,30 @@ class Explorer:
             return
         self.message = f'to frontier {f["size"]:.1f} m wide, {f["dist"]:.1f} m away ({len(fronts)} left)'
         self._send(f['goal'])
+
+    def _choose(self, fronts):
+        """Of the PLAN_TOP best frontiers (straight-line score), the one with the cheapest real route: the
+        planner's path (no driving) costed by length, reverse driving and forward / reverse switches
+        (route_cost). In tight spaces a frontier just behind the car or one needing a three-point turn
+        loses to one the car can drive to forwards. No plan for any: the first (navigation decides)."""
+        t0, best = time.monotonic(), None
+        for f in fronts[:PLAN_TOP]:
+            if time.monotonic() - t0 > PLAN_BUDGET_S:
+                break
+            path = self.nav.plan(*f['goal'])
+            if not path:
+                continue
+            rc = route_cost(path)
+            score = rc['cost'] - 0.5 * min(f['size'], 3.0) + SHARE_COST * f.get('share', 0.0)
+            f['route'] = rc
+            if best is None or score < best[0]:
+                best = (score, f)
+        if best is None:
+            return fronts[0]
+        f = best[1]
+        self.log.info(f'next frontier: route {f["route"]["length"]} m, {f["route"]["reverse"]} m reverse, '
+                      f'{f["route"]["cusps"]} switches ({time.monotonic() - t0:.1f} s to compare)')
+        return f
 
     def _send(self, goal):
         self.own_cancel = False
@@ -798,6 +896,7 @@ class Explorer:
             'state': self.state,
             'active': self.active(),
             'recovering': self.recovering or self.backout_req,
+            'lifted': self.lifted,
             'message': self.message,
             'radius': self.radius,
             'home': self.home,

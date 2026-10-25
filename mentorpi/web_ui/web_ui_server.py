@@ -31,6 +31,8 @@
   A map of another car: GET /api/nav/map.png?name=&car=, POST /api/nav/start?map=&car= copies it here first.
 - Bumps (stall_detector.py): during a mission, motors driving but the lidar still -> stop, mark the spot for
   Nav2 (/bump/cloud), back out the other way, go on.
+- Lifted by hand (lift_detector.py, IMU): pause the mission and slam_toolbox's scan intake, mark the place it was
+  driving to, go on when set down again.
 - Run recordings (run_recorder.py): every autonomous mapping run is recorded (timeline, Nav2 log, ros2 bag);
   GET /api/runs lists them.
 - Managing maps (Map panel -> Maps): POST /api/maps/rename?name=&to= | /api/maps/delete?name= (here, then on the
@@ -77,6 +79,7 @@ from shared_map import SharedMap
 from scan_filter import ScanFilter
 from run_recorder import RunRecorder
 from stall_detector import StallDetector
+from lift_detector import LiftDetector
 from nav_manager import NavManager
 from peer_manager import PeerManager
 from slam_manager import SlamManager
@@ -142,9 +145,13 @@ class WebBridge(Node):
         self.shared = SharedMap(self, self.slam, self.nav, self.team, self.peers, CAR_NAME)   # one map for all
         self.team.shared = self.shared
         self.stall = StallDetector(self, self.slam.tf, self.explorer, self.nav, self.slam)   # motors on, car still
+        self.lift = LiftDetector(self, self.explorer, self.nav, self.slam, self.stall)       # picked up by hand
         self.recorder = RunRecorder(self, self.explorer, self.nav, self.slam, CAR_NAME, self.team)  # runs/
         self.merge_lock = threading.Lock()
         self.merge_cache = {}      # (hash a, hash b) -> align result
+
+    def lifted(self):
+        return self.lift.lifted
 
     def map_in_use(self, name):
         return self.nav.running() and self.nav.map_name == name
@@ -242,6 +249,7 @@ class WebBridge(Node):
                       'yield_to': self.fleet.yield_to},
             'slam': slam_on,
             'slam_pose': self.slam.pose if slam_on else None,
+            'lifted': self.lift.lifted,
             'shared': {k: v for k, v in self.shared.status().items() if k in ('joined', 'leader', 'hash', 'frames')},
             'maps': [{k: m[k] for k in ('name', 'hash', 'resolution', 'origin')} for m in map_store.listing()],
             'maps_deleted': list(map_store.deleted()),

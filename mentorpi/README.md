@@ -131,6 +131,7 @@ Manual start without systemd (in this order):
 │   ├── scan_filter.py       /scan_nav: lidar without readings inside the car's rectangle
 │   ├── run_recorder.py      records every autonomous mapping run (timeline, Nav2 log, bag)
 │   ├── stall_detector.py    motors on but the car doesn't move: stop, mark the spot, back out
+│   ├── lift_detector.py     picked up by hand (IMU): pause mission + SLAM, mark the place, resume
 │   ├── explore_manager.py   autonomous mapping (frontier exploration)
 │   ├── depth_obstacles.py   depth camera obstacles (/depth/scan) + comparison with the lidar
 │   ├── map_store.py         saved maps + content hash (same map on two cars?)
@@ -594,6 +595,37 @@ lidar is the honest sign.
   percentile) in 1.5 s, so no false alarms; standing still, 99 % of changes were under 0.6 cm.
 
 Test: `tests/run.sh test_stall.py`.
+
+**Starting without backing up.** The page counted Nav2 as ready once its action server existed. That is
+about a second before bt_navigator is active, so the first goal was always rejected. The explorer took
+the rejection for a tight spot and backed up into unmapped space, usually a wall.
+- `nav_manager.ready()` now also asks Nav2's lifecycle manager (`is_active`).
+- A rejected goal is simply tried again.
+- A straight escape move only drives into floor the car's own map shows as free (`_known_free`).
+
+**Lifted by hand** (`web_ui/lift_detector.py`). The car can't see stairs yet, so a person picks it up
+before an edge. While it was carried, slam_toolbox took in the tilted scans and the map got messed up.
+From the IMU:
+- **Lifted:** tilted more than 15° from how it stands on the floor for 0.4 s, or jolted vertically by
+  more than 0.3 g for 0.15 s. Driving bumps and knocks are shorter. Then:
+  - the motors stop;
+  - autonomous mapping pauses ("lifted: set the car down to go on"), or a navigation goal is paused;
+  - slam_toolbox stops taking in scans (`pause_new_measurements`), and the shared map takes no keyframes;
+  - if the car was driving, the area 5–45 cm past the bumper in its driving direction is marked no-go
+    for Nav2: you lifted it because it was about to go there.
+- **Set down:** level, no vertical acceleration and no rotation for 3 s. slam_toolbox takes scans again
+  and finds its place by scan matching, and the mission goes on.
+
+**Tight spaces.** The recordings showed 5.7 (jpi1) and 18 (jpi2) forward/reverse switches a minute. 66
+of jpi2's 85 plans included reversing, a third of the switches within 0.6 m of the goal.
+- **Arrival heading:** goals arrive the way the car comes in, instead of facing the unmapped space. The
+  lidar sees all round, and the fixed final heading made the planner add three-point turns.
+- **Route-scored targets:** the 5 best frontiers by straight-line score get a real plan (no driving).
+  The cheapest by `route_cost` is chosen: length, plus 2 m per m in reverse, plus 1 m per
+  forward/reverse switch. A frontier straight ahead wins over a nearer one that needs a three-point
+  turn.
+
+Tests: `tests/run.sh test_lift.py`, `tests/run.sh test_tight.py`.
 
 #### Run recordings (`web_ui/run_recorder.py`)
 

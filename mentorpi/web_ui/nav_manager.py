@@ -35,12 +35,13 @@ import numpy as np
 
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
-from nav2_msgs.action import NavigateToPose
+from nav2_msgs.action import ComputePathToPose, NavigateToPose
 from nav_msgs.msg import Path
 from sensor_msgs.msg import LaserScan
 from rclpy.action import ActionClient
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
+from std_srvs.srv import Trigger
 
 import car_geometry
 import localize
@@ -112,6 +113,10 @@ class NavManager:
         node.create_subscription(Path, '/plan', self.on_plan, 1)
         node.create_subscription(LaserScan, SCAN_TOPIC, self.on_scan, qos_profile_sensor_data)
         self.client = ActionClient(node, NavigateToPose, 'navigate_to_pose')
+        self.plan_client = ActionClient(node, ComputePathToPose, 'compute_path_to_pose')   # plan only (explorer)
+        self.active_cli = node.create_client(Trigger, '/lifecycle_manager_navigation/is_active')
+        self.nav_active = False    # Nav2's lifecycle manager says all its nodes are active
+        self._asking = False
         node.create_timer(0.1, self.gate_watchdog)
         node.create_timer(0.2, self.update_pose)
         node.create_timer(1.0, self.auto_find_tick)
@@ -143,6 +148,7 @@ class NavManager:
                                          start_new_session=True,
                                          stdout=open(NAV_LOG, 'w'), stderr=subprocess.STDOUT)
             self.map_name, self.started_at, self.slam_mode = name, time.time(), False
+            self.nav_active = False
             self.goal, self.goal_state, self.plan, self.pose, self.pose_set = None, 'idle', [], None, False
             self.found, self.auto_find = None, True
             self.message = f'navigation starting on "{name}" (~20 s); then it finds its position on the map'
@@ -159,6 +165,7 @@ class NavManager:
             self.proc = subprocess.Popen(LAUNCH + ['slam:=true'], start_new_session=True,
                                          stdout=open(NAV_LOG, 'w'), stderr=subprocess.STDOUT)
             self.map_name, self.started_at, self.slam_mode = None, time.time(), True
+            self.nav_active = False
             self.goal, self.goal_state, self.plan, self.pose, self.pose_set = None, 'idle', [], None, True
             self.found, self.auto_find = None, False
             self.message = 'navigation starting on the live map'
@@ -166,7 +173,54 @@ class NavManager:
             return True, self.message
 
     def ready(self):
-        return self.running() and self.client.server_is_ready()
+        """Nav2 accepts goals: its action server exists AND its lifecycle manager reports every node active.
+        (The server exists a second before bt_navigator is active; a goal sent then is rejected, which the
+        explorer used to take for a tight spot and backed up into unmapped space.)"""
+        if not self.running() or not self.client.server_is_ready():
+            return False
+        if self.nav_active:
+            return True
+        if not self._asking and self.active_cli.service_is_ready():
+            self._asking = True
+            fut = self.active_cli.call_async(Trigger.Request())
+
+            def done(f):
+                self._asking = False
+                try:
+                    self.nav_active = bool(f.result().success)
+                except Exception:
+                    pass
+            fut.add_done_callback(done)
+        return False
+
+    def plan(self, x, y, yaw, timeout=4.0):
+        """A path from where the car is to (x, y, yaw) without driving it: [[x, y, yaw], ...], or None."""
+        if not self.running() or not self.plan_client.server_is_ready():
+            return None
+        g = ComputePathToPose.Goal()
+        g.use_start, g.planner_id = False, 'GridBased'
+        g.goal.header.frame_id = 'map'
+        g.goal.pose.position.x, g.goal.pose.position.y = float(x), float(y)
+        g.goal.pose.orientation.z, g.goal.pose.orientation.w = math.sin(yaw / 2), math.cos(yaw / 2)
+        done, box = threading.Event(), {}
+
+        def on_result(f):
+            try:
+                box['path'] = f.result().result.path.poses
+            except Exception:
+                pass
+            done.set()
+
+        def on_goal(f):
+            h = f.result()
+            if not h or not h.accepted:
+                done.set()
+                return
+            h.get_result_async().add_done_callback(on_result)
+        self.plan_client.send_goal_async(g).add_done_callback(on_goal)
+        if not done.wait(timeout) or not box.get('path'):
+            return None
+        return [[p.pose.position.x, p.pose.position.y, yaw_of(p.pose.orientation)] for p in box['path']]
 
     def stop(self):
         self.cancel()

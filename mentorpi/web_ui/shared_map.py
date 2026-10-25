@@ -182,6 +182,8 @@ class SharedMap:
 
     # ---- this car's keyframes ----------------------------------------------------------
     def capture(self):
+        if getattr(self.node, 'lifted', lambda: False)():
+            return                                     # carried (lift_detector): the lidar is tilted
         pose, scan = self.slam.pose, self.nav.scan
         if pose is None or scan is None or time.monotonic() - scan[0] > 1.0:
             return

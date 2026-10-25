@@ -1030,6 +1030,9 @@ async function slamPoll() {
   slam.st = st;
   if (mapMode === 'slam') $('slamState').style.color = st.running ? 'var(--ok)' : '';
   if (mapMode === 'slam') $('slamState').textContent = st.running ? `mapping ${Math.floor(st.uptime_s / 60)}:${String(st.uptime_s % 60).padStart(2, '0')}` : '';
+  if (mapMode === 'slam' && st.explore && st.explore.lifted) {      // lift_detector.py
+    $('slamState').textContent = 'lifted: set the car down to go on'; $('slamState').style.color = 'var(--warn)';
+  }
   const ex = st.explore || {};
   $('slamStart').disabled = st.running || !!(nav.st && nav.st.running); $('slamStop').disabled = !st.running; $('slamSave').disabled = !st.map;
   $('exploreStart').disabled = ex.active || !!(nav.st && nav.st.running && !nav.st.slam_mode) || chargeMode !== 'off';
