@@ -3,7 +3,7 @@
 Each map gets a short content hash (PNG pixels + resolution + origin, not the name), so two cars can tell
 whether they are on the same map even if one copy was renamed. Positions are only comparable then.
 
-Managing maps (Map panel -> Maps): rename() renames every file of a map (NAME.yaml/.png, and slam_toolbox's
+Managing maps (Mission panel -> Maps): rename() renames every file of a map (NAME.yaml/.png, and slam_toolbox's
 NAME.data/.posegraph if saved while mapping) and fixes the image line; delete() removes them and records
 the map's content hash in .deleted.json, so the map sync between the cars (peer_manager.py) never copies
 it back, and the other cars delete their copy too (they see the list in this car's status).

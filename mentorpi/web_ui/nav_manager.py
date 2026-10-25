@@ -1,7 +1,7 @@
 """Navigation for the MentorPi web UI (runs inside web_ui_server.py, in the MentorPi container).
 
 - start(map) / stop(): runs Nav2 (nav/nav.launch.py: map_server + AMCL + Hybrid-A* planner + Regulated
-  Pure Pursuit + collision monitor, set up for this car) on a map saved with the Map panel. Not
+  Pure Pursuit + collision monitor, set up for this car) on a map saved with the Mission panel. Not
   together with SLAM (both own the map -> odom transform).
 - set_pose(x, y, yaw): AMCL's starting guess ("Set position" on the page).
 - find_position(): finds the car on the map from one lidar scan (localize.py), no guess needed; runs by

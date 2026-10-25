@@ -325,7 +325,7 @@ class Explorer:
         self.nav.resume()
 
     def back_out(self):
-        """Back out (Map panel): drive back along the car's own trail, else straight back or forward, slowly,
+        """Back out (Mission panel): drive back along the car's own trail, else straight back or forward, slowly,
         watching the lidar. While exploring: the current goal is dropped, then exploring goes on. Otherwise
         (stopped, done, or just mapping): only the move. E-STOP, the joystick or Stop ends it."""
         if not self.slam.running() or self.slam.pose is None:

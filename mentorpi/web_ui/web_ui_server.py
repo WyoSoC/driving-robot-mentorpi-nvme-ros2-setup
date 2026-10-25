@@ -39,7 +39,7 @@
 - Lidar odometry (lidar_odometry.py): rf2o_laser_odometry -> /odom_lidar (not fused into /odom yet: compare first).
 - Run recordings (run_recorder.py): every mapping and navigation run is recorded (timeline, camera frames,
   map, Nav2 log, ros2 bag); GET /api/runs lists them, the page's Runs tab plays them back.
-- Managing maps (Map panel -> Maps): POST /api/maps/rename?name=&to= | /api/maps/delete?name= (here, then on the
+- Managing maps (Mission panel -> Maps): POST /api/maps/rename?name=&to= | /api/maps/delete?name= (here, then on the
   other online cars, found there by content; deletions also reach cars that were offline, see peer_manager.py).
 - Merging maps (map_merge.py): POST /api/maps/align?a=&b= lines map b up with map a (rotation + shift,
   ~3 s) and says whether they match; GET /api/maps/merge.png?a=&b= = overlay picture; POST
