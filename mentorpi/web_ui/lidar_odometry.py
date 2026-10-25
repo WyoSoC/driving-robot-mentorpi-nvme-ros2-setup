@@ -21,7 +21,8 @@ import time
 TOPIC = '/odom_lidar'
 CMD = ['ros2', 'run', 'rf2o_laser_odometry', 'rf2o_laser_odometry_node', '--ros-args',
        '-r', '__node:=rf2o_laser_odometry',
-       '-p', 'laser_scan_topic:=/scan_rf2o',      # scan_filter.py: -pi..pi, fixed 450 readings '-p', f'odom_topic:={TOPIC}', '-p', 'publish_tf:=false',
+       '-p', 'laser_scan_topic:=/scan_rf2o',      # scan_filter.py: -pi..pi, fixed 450 readings
+       '-p', f'odom_topic:={TOPIC}', '-p', 'publish_tf:=false',   # never /odom_rf2o or a TF: the EKF owns odom
        '-p', 'base_frame_id:=base_footprint', '-p', 'odom_frame_id:=odom', '-p', "init_pose_from_topic:=''",
        '-p', 'freq:=10.0', '--log-level', 'WARN']
 LOG = '/tmp/rf2o.log'
