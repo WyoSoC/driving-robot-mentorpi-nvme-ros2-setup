@@ -127,6 +127,19 @@ else
     ok "installed (not enabled)"
 fi
 
+step "HTTPS (Tailscale serve)"
+# https://<car>.<tailnet>.ts.net for the page (443), rosbridge (8443) and video (8444): the browser only gives
+# a secure page its microphone (talking through the car). Tailnet only; kept by tailscaled across reboots.
+if command -v tailscale >/dev/null && tailscale status --self --json 2>/dev/null | grep -q '"CertDomains": \['; then
+    sudo tailscale serve --bg --https=443 http://127.0.0.1:8000 >/dev/null &&
+    sudo tailscale serve --bg --https=8443 http://127.0.0.1:9090 >/dev/null &&
+    sudo tailscale serve --bg --https=8444 http://127.0.0.1:8080 >/dev/null &&
+    ok "https://$(tailscale status --self --json | python3 -c 'import json, sys; print(json.load(sys.stdin)["CertDomains"][0])')/" \
+    || warn "tailscale serve failed (see README: HTTPS)"
+else
+    warn "skipped: Tailscale not running, or HTTPS certificates not enabled for the tailnet (README: HTTPS)"
+fi
+
 step "Done"
 echo "    Start now:  sudo systemctl start mentorpi-webui   (starts container + bringup too)"
 echo "    Status:     $DIR/status.sh"

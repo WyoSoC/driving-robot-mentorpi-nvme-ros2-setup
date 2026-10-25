@@ -99,6 +99,34 @@ Manual start without systemd (in this order):
 
   12 % dead zone on the sticks. Releasing everything sends stop, and input is ignored while the page
   is hidden. A disconnected pad stops the car.
+- **Audio** (speaker icon left of the gamepad; `web_ui/audio.py`). Both cars carry Hiwonder's voice
+  module: a USB speaker and microphone ("USB PnP Audio Device", 48 kHz stereo). The menu has:
+  - **Listen**: the car's microphone streamed to the page (~0.3 s delay), with a level meter. The icon's
+    dot turns red while anyone listens, and the car logs who (the Tailscale login on the https page).
+  - **Hold to talk**: your device's microphone through the car's speaker. Browsers give a page the
+    microphone only when it is secure, so this needs the https page (next section). On the http page the
+    button links there. While you talk, the car's microphone is not played back (no echo).
+  - **Say**: type text and the car speaks it (espeak-ng, installed in the container at every start by
+    `run_container.sh`).
+  - **Volume**: speaker volume and microphone gain (the module's mixer).
+
+  Talk and Say share the speaker, one at a time. API: `GET /api/audio`, `GET /api/audio/listen` (raw
+  16 kHz mono s16le), `POST /api/audio/talk` (body: the same), `POST /api/audio/say?text=`,
+  `POST /api/audio/volume?speaker=&mic=`. Anyone who can open the page can listen: the page has no
+  login, and the tailnet is the access control.
+- **HTTPS**: every car is also at `https://<car>.<tailnet>.ts.net/`, through Tailscale serve
+  (tailnet only, real certificate, kept across reboots; set up by `install.sh`):
+
+  | https port | goes to |
+  |---|---|
+  | 443 | the page and its API (8000) |
+  | 8443 | rosbridge (9090, wss) |
+  | 8444 | video (8080) |
+
+  The page uses the secure addresses when it was opened over https. `http://<car>:8000` keeps working.
+  Needed for talking through the car (microphone). Needs MagicDNS and HTTPS certificates enabled for
+  the tailnet. Set up by hand: `sudo tailscale serve --bg --https=443 http://127.0.0.1:8000`, and the same
+  for 8443 → 9090 and 8444 → 8080. `sudo tailscale serve status` lists them.
 - **Sensors**: lidar radar view (1–8 m), IMU attitude and heading, odometry trail,
   battery voltage (2S pack, % is approximate), per-sensor health lights, event log.
 - **Battery warnings**: the page shows "low" below 6.9 V and "critical" below 6.6 V. The board's own
@@ -154,6 +182,7 @@ Manual start without systemd (in this order):
 │   ├── stall_detector.py    motors on but the car doesn't move: stop, mark the spot, back out
 │   ├── lift_detector.py     picked up by hand (IMU): pause mission + SLAM, mark the place, resume
 │   ├── lidar_odometry.py    rf2o lidar odometry (/odom_lidar) and its averaged speed for the EKF
+│   ├── audio.py             the voice module: listen, talk, say, volume
 │   ├── explore_manager.py   autonomous mapping (frontier exploration)
 │   ├── depth_obstacles.py   depth camera obstacles (/depth/scan) + comparison with the lidar
 │   ├── map_store.py         saved maps + content hash (same map on two cars?)
