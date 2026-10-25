@@ -78,6 +78,27 @@ Manual start without systemd (in this order):
 - **Driving**: drag the round pad (touch or mouse), or `W A S D` / arrow keys.
   Speed limit slider 0.1–0.7 m/s (default 0.3, remembered per browser).
   **Space** or the red button = E-stop (locks controls until released).
+- **Gamepad** (icon left of E-STOP; its dot turns green when a pad is connected): pair (Bluetooth) or
+  plug in (USB) a gamepad on the computer, phone or tablet showing the page, not on the car, and press
+  any button. The browser's Gamepad API reads it, and it drives through the same path as the on-screen
+  pad: speed limit, E-stop, watchdog, and any input cancels a navigation goal. Works in Chrome and
+  Edge, also on the car's plain-http page; some other browsers allow gamepads only on https pages. The
+  icon's menu shows the connected pad, its live input, how to connect, and the button map (standard
+  layout):
+
+  | Control | Does |
+  |---|---|
+  | Left stick ↑ ↓ | throttle |
+  | Right stick ← → (left stick ← → when the right one is idle) | steering |
+  | RT / LT (R2 / L2) | forward / reverse, by how far pressed |
+  | **B (○)** | **E-STOP** |
+  | Start (Options) | release E-STOP |
+  | A (✕) | horn |
+  | X (□) | centre the steering |
+  | RB / LB, D-pad ↑ ↓ | speed limit + / − 0.05 m/s |
+
+  12 % dead zone on the sticks. Releasing everything sends stop, and input is ignored while the page
+  is hidden. A disconnected pad stops the car.
 - **Sensors**: lidar radar view (1–8 m), IMU attitude and heading, odometry trail,
   battery voltage (2S pack, % is approximate), per-sensor health lights, event log.
 - **Battery warnings**: the page shows "low" below 6.9 V and "critical" below 6.6 V. The board's own

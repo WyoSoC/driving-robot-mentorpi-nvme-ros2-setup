@@ -75,6 +75,23 @@
   .estop { border: 0; border-radius: 10px; padding: 7px 16px; font-weight: 700; font-size: 14px;
     letter-spacing: .06em; color: #fff; background: var(--bad); cursor: pointer;
     box-shadow: 0 0 0 3px rgba(248,81,73,.25); }
+  .gp-wrap { position: relative; display: inline-flex; }
+  .gp-btn { display: inline-flex; align-items: center; gap: 4px; padding: 5px 8px; }
+  .gp-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); opacity: .5; }
+  .gp-dot.on { background: var(--ok); opacity: 1; }
+  .gp-menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; width: min(360px, calc(100vw - 32px));
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.25); font-size: 12px; line-height: 1.4; }
+  .gp-menu[hidden] { display: none; }
+  .gp-menu h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 10px 0 4px; }
+  .gp-menu ol { margin: 0; padding-left: 18px; }
+  .gp-menu li { margin: 2px 0; }
+  .gp-status { font-weight: 600; }
+  .gp-live { font-family: var(--mono); font-size: 11px; color: var(--muted); min-height: 1em; margin-top: 2px; }
+  .gp-note { color: var(--muted); margin: 6px 0 0; }
+  .gp-map { width: 100%; border-collapse: collapse; }
+  .gp-map td { padding: 2px 4px; border-top: 1px solid var(--line); vertical-align: top; }
+  .gp-map td:first-child { white-space: nowrap; color: var(--text); width: 40%; }
   .estop.engaged { background: var(--warn); color: #111; box-shadow: 0 0 0 3px rgba(210,153,34,.35); }
 
   /* Three equal columns, each a stack:  Camera | Drive | IMU
@@ -214,7 +231,36 @@
   <button class="btn" id="chargeBtn" aria-pressed="false">⚡ Charging mode: off</button>
   <span id="peerPills" style="display:contents"></span>
   <span class="spacer"></span>
-  <button class="estop" id="estop" title="Emergency stop (Space)">E-STOP</button>
+  <span class="gp-wrap">
+    <button class="btn gp-btn" id="gpBtn" aria-haspopup="true" aria-expanded="false" title="Gamepad: connection and button map">
+      <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M7.5 6h9A5.5 5.5 0 0 1 22 11.5v2.3a3.7 3.7 0 0 1-6.6 2.3L14.2 14.6H9.8l-1.2 1.5A3.7 3.7 0 0 1 2 13.8v-2.3A5.5 5.5 0 0 1 7.5 6Zm-.5 3v1.5H5.5v1.5H7v1.5h1.5V12H10v-1.5H8.5V9H7Zm9.25.25a1 1 0 1 0 0 2 1 1 0 0 0 0-2Zm-2 2a1 1 0 1 0 0 2 1 1 0 0 0 0-2Zm4 0a1 1 0 1 0 0 2 1 1 0 0 0 0-2Zm-2 2a1 1 0 1 0 0 2 1 1 0 0 0 0-2Z"/></svg>
+      <span class="gp-dot" id="gpDot"></span>
+    </button>
+    <div class="gp-menu" id="gpMenu" hidden role="dialog" aria-label="Gamepad">
+      <div class="gp-status" id="gpStatus">No gamepad</div>
+      <div class="gp-live" id="gpLive"></div>
+      <h3>Connect</h3>
+      <ol>
+        <li>Pair (Bluetooth) or plug in (USB) the gamepad on <b>this computer, phone or tablet</b>, the one showing this page. Not on the car.</li>
+        <li>Press any button on the pad: the dot above turns green and the pad's name shows here.</li>
+        <li>It drives like the on-screen pad: only while you push a stick or trigger, within the speed limit. Letting go stops the car.</li>
+      </ol>
+      <p class="gp-note" id="gpNote">Works in Chrome and Edge (also on Android). Some browsers only allow gamepads on secure (https) pages.</p>
+      <h3>Buttons (standard layout: Xbox / PlayStation / 8BitDo)</h3>
+      <table class="gp-map">
+        <tr><td>Left stick ↑ ↓</td><td>throttle (forward / reverse)</td></tr>
+        <tr><td>Right stick ← →</td><td>steering (left stick ← → if the right one is idle)</td></tr>
+        <tr><td>RT / LT (R2 / L2)</td><td>forward / reverse, by how far pressed</td></tr>
+        <tr><td><b>B</b> (○)</td><td><b>E-STOP</b></td></tr>
+        <tr><td>Start (Options)</td><td>release E-STOP</td></tr>
+        <tr><td>A (✕)</td><td>horn</td></tr>
+        <tr><td>X (□)</td><td>centre the steering</td></tr>
+        <tr><td>RB / LB, D-pad ↑ ↓</td><td>speed limit + / − 0.05 m/s</td></tr>
+      </table>
+      <p class="gp-note">Any stick or trigger input also cancels a navigation goal, like the on-screen pad.</p>
+    </div>
+  </span>
+  <button class="estop" id="estop" title="Emergency stop (Space, gamepad B)">E-STOP</button>
   <button class="btn" id="themeBtn" title="Light / dark theme">🌙</button>
 </header>
 
@@ -630,13 +676,90 @@ $('centerBtn').onclick = () => { if (!drive.estop) { sendCmd(0, 0); log('Steerin
 $('hornBtn').onclick = () => ros.publish('/ros_robot_controller/set_buzzer',
   { freq: 1900, on_time: 0.1, off_time: 0.05, repeat: 2 });
 
+// ---------- Gamepad (Web Gamepad API: Bluetooth / USB pad on the device showing this page) ----------
+// Read 30 times a second. Sticks / triggers feed the 10 Hz control loop below (same limits, E-STOP and
+// watchdog as the on-screen pad); buttons act on press. Standard mapping (Xbox / PlayStation layout):
+// axes 0/1 = left stick, 2/3 = right stick; buttons 0 A, 1 B, 2 X, 3 Y, 4 LB, 5 RB, 6 LT, 7 RT, 9 Start,
+// 12 / 13 D-pad up / down.
+const gamepad = { index: null, id: '', active: false, throttle: 0, steer: 0, prev: [], supported: true };
+const GP_DEAD = 0.12;
+const dz = v => Math.abs(v) < GP_DEAD ? 0 : Math.sign(v) * (Math.abs(v) - GP_DEAD) / (1 - GP_DEAD);
+function gpList() {
+  try { return Array.from(navigator.getGamepads ? navigator.getGamepads() : []).filter(Boolean); }
+  catch { gamepad.supported = false; return []; }
+}
+function gpPick() {
+  const pads = gpList();
+  return pads.find(p => p.mapping === 'standard') || pads[0] || null;
+}
+function gpStatus() {
+  const pad = gamepad.index !== null ? gpList().find(p => p.index === gamepad.index) : null;
+  $('gpDot').classList.toggle('on', !!pad);
+  $('gpBtn').title = pad ? `Gamepad: ${pad.id}` : 'Gamepad: connection and button map';
+  $('gpStatus').textContent = pad ? `Connected: ${pad.id}` + (pad.mapping === 'standard' ? '' : ' (non-standard layout: buttons may differ)')
+    : !gamepad.supported || !navigator.getGamepads ? 'This browser does not give this page access to gamepads'
+    : 'No gamepad: connect one, then press any button on it';
+  if (!gamepad.supported || !navigator.getGamepads)
+    $('gpNote').textContent = 'Use Chrome or Edge (they allow gamepads on this http page), or open the page on the car itself (http://localhost:8000).';
+}
+addEventListener('gamepadconnected', e => { log(`Gamepad connected: ${e.gamepad.id}`); gamepad.index = null; gpStatus(); });
+addEventListener('gamepaddisconnected', e => {
+  log(`Gamepad disconnected: ${e.gamepad.id}`);
+  if (e.gamepad.index === gamepad.index) { gamepad.index = null; gamepad.active = false; gamepad.throttle = gamepad.steer = 0; }
+  gpStatus();
+});
+function gpPressed(pad, i) { const b = pad.buttons[i]; return !!b && (b.pressed || b.value > 0.5); }
+function gpLimit(d) {
+  const v = Math.round((+speedLimit.value + d) * 100) / 100;
+  speedLimit.value = Math.min(+speedLimit.max, Math.max(+speedLimit.min, v));
+  speedLimit.dispatchEvent(new Event('input'));
+}
+setInterval(() => {
+  const pad = gpPick();
+  if (!pad) { if (gamepad.index !== null) { gamepad.index = null; gpStatus(); } gamepad.active = false; return; }
+  if (pad.index !== gamepad.index) { gamepad.index = pad.index; gamepad.prev = []; gpStatus(); }
+  const ax = i => dz(pad.axes[i] || 0);
+  const trig = i => (pad.buttons[i] ? pad.buttons[i].value : 0);
+  const rt = trig(7), lt = trig(6);
+  gamepad.throttle = (rt > 0.05 || lt > 0.05) ? rt - lt : -ax(1);
+  gamepad.steer = Math.abs(ax(2)) > 0 ? ax(2) : ax(0);
+  gamepad.active = gamepad.throttle !== 0 || gamepad.steer !== 0;
+  // buttons: act once per press
+  const now = pad.buttons.map((b, i) => gpPressed(pad, i));
+  const down = i => now[i] && !gamepad.prev[i];
+  if (down(1)) setEstop(true);
+  if (down(9) && drive.estop && !now[1]) setEstop(false);
+  if (down(0)) $('hornBtn').click();
+  if (down(2) && !gamepad.active && !drive.estop) $('centerBtn').click();
+  if (down(5) || down(12)) gpLimit(+0.05);
+  if (down(4) || down(13)) gpLimit(-0.05);
+  gamepad.prev = now;
+  if (!$('gpMenu').hidden)
+    $('gpLive').textContent = `throttle ${gamepad.throttle.toFixed(2)} · steer ${gamepad.steer.toFixed(2)} · ` +
+      `buttons ${now.map((p, i) => p ? i : null).filter(i => i !== null).join(' ') || '–'}`;
+}, 33);
+$('gpBtn').onclick = e => {
+  e.stopPropagation();
+  const m = $('gpMenu'); m.hidden = !m.hidden;
+  $('gpBtn').setAttribute('aria-expanded', String(!m.hidden));
+  gpStatus();
+};
+document.addEventListener('click', e => {
+  if (!$('gpMenu').hidden && !e.target.closest('.gp-wrap')) { $('gpMenu').hidden = true; $('gpBtn').setAttribute('aria-expanded', 'false'); }
+});
+addEventListener('keydown', e => { if (e.key === 'Escape' && !$('gpMenu').hidden) { $('gpMenu').hidden = true; $('gpBtn').setAttribute('aria-expanded', 'false'); } });
+gpStatus();
+
 // 10 Hz control loop. Sends while input is active; a few zero commands after release.
 setInterval(() => {
   let throttle = 0, steerIn = 0;
   const keyboard = drive.keys.size > 0;
+  const gp = gamepad.active && !document.hidden;
   if (drive.joy) {
     throttle = -drive.joy.y; steerIn = drive.joy.x;
     drive.steer = steerIn;
+  } else if (gp) {
+    throttle = gamepad.throttle; drive.steer = gamepad.steer;
   } else if (keyboard) {
     throttle = (drive.keys.has('up') ? 1 : 0) - (drive.keys.has('down') ? 1 : 0);
     steerIn = (drive.keys.has('right') ? 1 : 0) - (drive.keys.has('left') ? 1 : 0);
@@ -644,7 +767,7 @@ setInterval(() => {
   } else {
     drive.steer = 0;
   }
-  const active = !drive.estop && ros.connected && (drive.joy || keyboard);
+  const active = !drive.estop && ros.connected && (drive.joy || gp || keyboard);
   drive.speed = active ? throttle * speedLimit.value : 0;
   const steerRad = active ? -drive.steer * MAX_STEER : 0;   // ROS: positive = left
 
@@ -658,7 +781,8 @@ setInterval(() => {
   setBar($('barSteer'), -steerRad / MAX_STEER);
   $('hudCmd').textContent = `cmd ${fmt(drive.speed)} m/s`;
   $('hudSteer').textContent = `steer ${$('mSteer').textContent}`;
-  $('driveState').textContent = drive.estop ? 'E-STOP' : !ros.connected ? 'offline' : active ? 'driving' : 'idle';
+  $('driveState').textContent = drive.estop ? 'E-STOP' : !ros.connected ? 'offline'
+    : active ? (gp && !drive.joy ? 'driving (gamepad)' : 'driving') : 'idle';
 }, 100);
 
 function setBar(el, v) {   // v in [-1, 1], drawn from center
