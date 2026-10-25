@@ -897,6 +897,7 @@ class Explorer:
             'active': self.active(),
             'recovering': self.recovering or self.backout_req,
             'lifted': self.lifted,
+            'plan': self.nav.plan if self.active() and self.nav.goal_active() else [],   # to the goal (own frame)
             'message': self.message,
             'radius': self.radius,
             'home': self.home,

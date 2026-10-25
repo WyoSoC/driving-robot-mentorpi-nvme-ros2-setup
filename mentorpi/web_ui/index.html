@@ -1060,7 +1060,7 @@ async function slamPoll() {
           (V ? ' (shared map)' : ''); })() : '') +
       (st.maps.length ? ` · saved: ${st.maps.join(', ')}` : '')
     : (st.running ? 'waiting for the first map…' : `Not mapping.${st.maps.length ? ' Saved maps: ' + st.maps.join(', ') : ''}`);
-  if (mapMode === 'slam' && ex.active) $('slamInfo').textContent += ' · Orange: unmapped edges · square: start · green circle: next goal';
+  if (mapMode === 'slam' && ex.active) $('slamInfo').textContent += ' · Orange: unmapped edges · square: start · green circle: next goal, dashed: planned path';
   if (mapMode === 'slam' && ex.team && ex.team.length)
     $('slamInfo').textContent += ' · ' + ex.team.map(t => `${t.car}: ${t.note}`).join(', ') +
       (ex.team.some(t => t.matched) ? ' (blue: the other car, in this map)' : '');
@@ -1115,6 +1115,13 @@ function drawSlam() {
     ctx.fillStyle = '#ff9f1a';
     for (const c of ex.cells) { const [cx, cy] = toC(c[0], c[1]); ctx.fillRect(cx - 1.5, cy - 1.5, 3, 3); }
   }
+  const dashed = (pts, color) => {               // a planned path, dashed
+    if (!pts || pts.length < 2) return;
+    ctx.save(); ctx.setLineDash([6, 5]); ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
+    pts.forEach((q, i) => { const [cx, cy] = toC(q[0], q[1]); i ? ctx.lineTo(cx, cy) : ctx.moveTo(cx, cy); });
+    ctx.stroke(); ctx.restore();
+  };
+  if (ex.active) dashed(ex.plan, '#3fb950');
   if (ex.goal && ex.active) {
     const [gx, gy] = toC(ex.goal[0], ex.goal[1]);   // a point: the car arrives whichever way it comes in
     ring(ctx, gx, gy, 8, '#3fb950');
@@ -1126,6 +1133,7 @@ function drawSlam() {
     if (!t.T || !nv || !nv.pose) continue;
     const [tx, ty, ta] = t.T, c = Math.cos(ta), sn = Math.sin(ta);
     const mv = (x, y) => [tx + c * x - sn * y, ty + sn * x + c * y];
+    if (nv.plan && nv.plan.length > 1) dashed(nv.plan.map(q => mv(q[0], q[1])), '#58a6ff');
     if (nv.goal && ['active', 'sending', 'yielding'].includes(nv.goal_state)) {
       const [gx, gy] = toC(...mv(nv.goal[0], nv.goal[1]));
       ring(ctx, gx, gy, 7, '#58a6ff');
