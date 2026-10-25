@@ -1060,7 +1060,7 @@ async function slamPoll() {
           (V ? ' (shared map)' : ''); })() : '') +
       (st.maps.length ? ` · saved: ${st.maps.join(', ')}` : '')
     : (st.running ? 'waiting for the first map…' : `Not mapping.${st.maps.length ? ' Saved maps: ' + st.maps.join(', ') : ''}`);
-  if (mapMode === 'slam' && ex.active) $('slamInfo').textContent += ' · Orange: unmapped edges · square: start · green: next goal';
+  if (mapMode === 'slam' && ex.active) $('slamInfo').textContent += ' · Orange: unmapped edges · square: start · green circle: next goal';
   if (mapMode === 'slam' && ex.team && ex.team.length)
     $('slamInfo').textContent += ' · ' + ex.team.map(t => `${t.car}: ${t.note}`).join(', ') +
       (ex.team.some(t => t.matched) ? ' (blue: the other car, in this map)' : '');
@@ -1116,8 +1116,8 @@ function drawSlam() {
     for (const c of ex.cells) { const [cx, cy] = toC(c[0], c[1]); ctx.fillRect(cx - 1.5, cy - 1.5, 3, 3); }
   }
   if (ex.goal && ex.active) {
-    const [gx, gy] = toC(ex.goal[0], ex.goal[1]);
-    arrow(ctx, gx, gy, ex.goal[2] + va, 11, '#3fb950', true);
+    const [gx, gy] = toC(ex.goal[0], ex.goal[1]);   // a point: the car arrives whichever way it comes in
+    ring(ctx, gx, gy, 8, '#3fb950');
   }
   for (const t of ex.team || []) {             // other cars mapping with this one, moved into this map
     const p = fleet.peers.find(q => q.car === t.car), nv0 = p && p.status && p.status.nav;
@@ -1128,7 +1128,7 @@ function drawSlam() {
     const mv = (x, y) => [tx + c * x - sn * y, ty + sn * x + c * y];
     if (nv.goal && ['active', 'sending', 'yielding'].includes(nv.goal_state)) {
       const [gx, gy] = toC(...mv(nv.goal[0], nv.goal[1]));
-      arrow(ctx, gx, gy, nv.goal[2] + ta + va, 9, '#58a6ff', true);
+      ring(ctx, gx, gy, 7, '#58a6ff');
     }
     const [cx, cy] = toC(...mv(nv.pose[0], nv.pose[1]));
     arrow(ctx, cx, cy, nv.pose[2] + ta + va, 10, '#58a6ff');
@@ -1464,6 +1464,11 @@ function navView(w, h) {
     toC: (x, y) => [ox + (x - m.origin[0]) / m.resolution * s, oy + (img.height - (y - m.origin[1]) / m.resolution) * s],
     toM: (cx, cy) => [m.origin[0] + (cx - ox) / s * m.resolution, m.origin[1] + (img.height - (cy - oy) / s) * m.resolution],
   };
+}
+function ring(ctx, cx, cy, r, color) {   // a goal point without a direction
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, 2 * Math.PI);
+  ctx.strokeStyle = color; ctx.lineWidth = 2.5; ctx.stroke();
+  ctx.beginPath(); ctx.arc(cx, cy, 2, 0, 2 * Math.PI); ctx.fillStyle = color; ctx.fill();
 }
 function arrow(ctx, cx, cy, yaw, r, color, outline) {
   const a = -yaw;
