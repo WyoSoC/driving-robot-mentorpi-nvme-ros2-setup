@@ -129,6 +129,7 @@ Manual start without systemd (in this order):
 │   ├── localize.py          find the car on a saved map from one lidar scan
 │   ├── car_geometry.py      the car's measured shape and sensor positions (used everywhere)
 │   ├── scan_filter.py       /scan_nav: lidar without readings inside the car's rectangle
+│   ├── run_recorder.py      records every autonomous mapping run (timeline, Nav2 log, bag)
 │   ├── explore_manager.py   autonomous mapping (frontier exploration)
 │   ├── depth_obstacles.py   depth camera obstacles (/depth/scan) + comparison with the lidar
 │   ├── map_store.py         saved maps + content hash (same map on two cars?)
@@ -534,6 +535,25 @@ limit each stop it. Navigation then stops and mapping keeps running, so the map 
 a stair edge, so the floor past it looks free. The depth camera looks straight ahead, and on a glossy
 floor it gets no return from the floor at all. Block stairs, or keep the distance limit inside the
 safe area.
+
+#### Run recordings (`web_ui/run_recorder.py`)
+
+Every autonomous mapping run is recorded, from the page, from another car, or a dry run, to find out
+afterwards why the car stopped, backed up or got stuck. One folder per run in `~/docker/tmp/runs/` on
+the car (`/home/ubuntu/shared/runs` in the container): `YYYYMMDD_HHMMSS_<car>/` with
+
+- `events.jsonl`: a timeline with seconds since the start:
+  - explorer state, message and goal, navigation goal state, shared map joined (whenever they change);
+  - the car's position every second;
+  - every Nav2 warning or error, with the car's position at that moment;
+- `nav.log`: Nav2's whole output;
+- `bag/`: a ros2 bag of the lidar (raw and filtered), depth obstacles, odometry, TF, the maps and
+  costmaps, Nav2's plan, the controller's lookahead point and collision arc, and the drive commands.
+  It is not compressed (about 15 MB a minute);
+- `summary.json`: duration, goals, area mapped, the saved map, and Nav2 warnings counted by kind;
+- `run.json`: radius, dry run, together.
+
+The newest 20 runs are kept, 10 GB at most. `GET /api/runs` lists them.
 
 ### Mapping together (two cars explore at once)
 

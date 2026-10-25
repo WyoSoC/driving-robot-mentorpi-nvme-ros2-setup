@@ -28,6 +28,8 @@
   cars poll), GET /api/fleet = this car + the latest status of every other car, GET /api/maps = maps here
   and on the other cars, GET /api/maps/file?name=&ext=png|yaml (a map for another car to copy).
   A map of another car: GET /api/nav/map.png?name=&car=, POST /api/nav/start?map=&car= copies it here first.
+- Run recordings (run_recorder.py): every autonomous mapping run is recorded (timeline, Nav2 log, ros2 bag);
+  GET /api/runs lists them.
 - Managing maps (Map panel -> Maps): POST /api/maps/rename?name=&to= | /api/maps/delete?name= (here, then on the
   other online cars, found there by content; deletions also reach cars that were offline, see peer_manager.py).
 - Merging maps (map_merge.py): POST /api/maps/align?a=&b= lines map b up with map a (rotation + shift,
@@ -70,6 +72,7 @@ from fleet import Fleet
 from team import Team
 from shared_map import SharedMap
 from scan_filter import ScanFilter
+from run_recorder import RunRecorder
 from nav_manager import NavManager
 from peer_manager import PeerManager
 from slam_manager import SlamManager
@@ -134,6 +137,7 @@ class WebBridge(Node):
         self.fleet = Fleet(self, self.slam.tf, self.nav, self.peers, CAR_NAME, self.team)
         self.shared = SharedMap(self, self.slam, self.nav, self.team, self.peers, CAR_NAME)   # one map for all
         self.team.shared = self.shared
+        self.recorder = RunRecorder(self, self.explorer, self.nav, self.slam, CAR_NAME, self.team)  # runs/
         self.merge_lock = threading.Lock()
         self.merge_cache = {}      # (hash a, hash b) -> align result
 
@@ -343,6 +347,8 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
             except ValueError:
                 return self._send(400, {'error': 'since: keyframe number'})
             return self._send(200, self.node.shared.frames_json(since))
+        if url.path == '/api/runs':
+            return self._send(200, self.node.recorder.listing())
         if url.path == '/api/shared/state':
             return self._send(200, self.node.shared.state_json())
         if url.path == '/api/slam/grid':
