@@ -452,11 +452,11 @@ is missing. Turn rate stays the gyro's.
 | **2 cm/s** | **10.5 / 26.2 cm** | **27.4 cm** | **49.0 m** |
 | 1 cm/s | 9.7 / 23.7 cm | 14.4 cm | 47.5 m |
 
-**Odometry panel:** green is `/odom`, purple is `/odom_lidar`, drawn from the same start point. The
-readout shows the lidar odometry's distance and how far apart the two ends are.
+**Odometry panel:** the EKF's output (`/odom`) only: the green trail, position, heading, speed, turn rate
+and distance driven. The lidar odometry was checked against it (the numbers above) and is no longer drawn;
+it still feeds the EKF.
 - `+` / `−` (or the mouse wheel) zoom; **Fit** shows the whole trail and keeps fitting as it grows.
 - The grid adapts from 0.1 to 50 m, and up to 20,000 points (~400 m) are kept.
-- An rf2o restart (it starts from 0 again) starts a new purple segment instead of a jump.
 
 `motor_speed_map` ([real, sent, ...] m/s, measured by `speedmap`) corrects the motor commands so a
 commanded speed is the real speed and speed limits mean what they say (both cars: real = 0.89-0.98 x
