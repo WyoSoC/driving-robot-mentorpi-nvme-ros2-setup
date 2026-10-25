@@ -37,8 +37,8 @@
   raw 16 kHz mono s16le), POST /api/audio/talk (body: the same format), POST /api/audio/say?text=,
   POST /api/audio/volume?speaker=&mic= (0-100).
 - Lidar odometry (lidar_odometry.py): rf2o_laser_odometry -> /odom_lidar (not fused into /odom yet: compare first).
-- Run recordings (run_recorder.py): every autonomous mapping run is recorded (timeline, Nav2 log, ros2 bag);
-  GET /api/runs lists them.
+- Run recordings (run_recorder.py): every mapping and navigation run is recorded (timeline, camera frames,
+  map, Nav2 log, ros2 bag); GET /api/runs lists them, the page's Runs tab plays them back.
 - Managing maps (Map panel -> Maps): POST /api/maps/rename?name=&to= | /api/maps/delete?name= (here, then on the
   other online cars, found there by content; deletions also reach cars that were offline, see peer_manager.py).
 - Merging maps (map_merge.py): POST /api/maps/align?a=&b= lines map b up with map a (rotation + shift,
@@ -401,6 +401,8 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
             return self._send(200, self.node.shared.frames_json(since))
         if url.path == '/api/runs':
             return self._send(200, self.node.recorder.listing())
+        if url.path.startswith('/api/runs/'):
+            return self._run_get(url.path.split('/')[3:])
         if url.path == '/api/shared/state':
             return self._send(200, self.node.shared.state_json())
         if url.path == '/api/slam/grid':
@@ -466,9 +468,37 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
                     out.append(dict(m, car=p['car'], local=False, online=p['online']))
         return {'car': CAR_NAME, 'maps': out}
 
+    def _run_get(self, parts):
+        """/api/runs/<id>, /api/runs/<id>/map.png, /api/runs/<id>/frame/<t>.jpg, /api/runs/<id>/download"""
+        rec = self.node.recorder
+        rid = parts[0] if parts else ''
+        if len(parts) == 1:
+            d = rec.detail(rid)
+            return self._send(200, d) if d else self._send(404, {'error': 'no such run'})
+        if len(parts) == 2 and parts[1] == 'download':
+            if rec.run_dir(rid) is None:
+                return self._send(404, {'error': 'no such run'})
+            self.send_response(200)            # HTTP/1.0: the end of the stream ends the zip, no length needed
+            self.send_header('Content-Type', 'application/zip')
+            self.send_header('Content-Disposition', f'attachment; filename="{rid}.zip"')
+            self.end_headers()
+            try:
+                rec.write_zip(rid, self.wfile)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            return
+        name = parts[1] if len(parts) == 2 else parts[2] if len(parts) == 3 and parts[1] == 'frame' else ''
+        got = rec.file(rid, name) if name else None
+        if not got:
+            return self._send(404, {'error': 'not found'})
+        return self._send(200, got[0], got[1])
+
     def do_POST(self):
         url = urllib.parse.urlparse(self.path)
         slam = self.node.slam
+        if url.path.startswith('/api/runs/') and url.path.endswith('/delete'):
+            ok, msg = self.node.recorder.delete(url.path.split('/')[3])
+            return self._send(200 if ok else 400, {'ok': ok, 'message': msg})
         if url.path == '/api/charging':
             on = urllib.parse.parse_qs(url.query).get('on', [''])[0]
             if on not in ('0', '1'):

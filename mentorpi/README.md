@@ -164,6 +164,7 @@ Manual start without systemd (in this order):
 ├── tests/run.sh             tests run in the container, nothing drives: test_fleet.py (cars avoiding
 │                            each other), test_merge.py (map merging), test_localize.py (finding the car on a map),
 │                            test_depth_sim.py (depth threat levels)
+│                            test_runs.py (run recording, Runs tab data, zip)
 ├── install.sh               installs/updates everything on a car (idempotent)
 ├── make_bundle.sh           packages kit + Docker image for transfer
 ├── system/                  udev rules + systemd unit templates
@@ -178,7 +179,7 @@ Manual start without systemd (in this order):
 │   ├── localize.py          find the car on a saved map from one lidar scan
 │   ├── car_geometry.py      the car's measured shape and sensor positions (used everywhere)
 │   ├── scan_filter.py       /scan_nav: lidar without readings inside the car's rectangle
-│   ├── run_recorder.py      records every autonomous mapping run (timeline, Nav2 log, bag)
+│   ├── run_recorder.py      records every mapping / navigation run (timeline, camera, map, bag)
 │   ├── stall_detector.py    motors on but the car doesn't move: stop, mark the spot, back out
 │   ├── lift_detector.py     picked up by hand (IMU): pause mission + SLAM, mark the place, resume
 │   ├── lidar_odometry.py    rf2o lidar odometry (/odom_lidar) and its averaged speed for the EKF
@@ -770,24 +771,47 @@ data, onto a floor ending at an edge.
 
 Not yet tried at real stairs.
 
-#### Run recordings (`web_ui/run_recorder.py`)
+#### Run recordings (`web_ui/run_recorder.py`) and the Runs tab
 
-Every autonomous mapping run is recorded, from the page, from another car, or a dry run, to find out
-afterwards why the car stopped, backed up or got stuck. One folder per run in `~/docker/tmp/runs/` on
-the car (`/home/ubuntu/shared/runs` in the container): `YYYYMMDD_HHMMSS_<car>/` with
+Every mapping and navigation run is recorded, to look at it again afterwards: where the car went, what it
+saw, and why it stopped, backed up or got stuck. A run lasts while something drives the car with a map:
+
+- **mapping**: Start mapping, then driving by hand (keys, joystick, gamepad);
+- **autonomous mapping**: the explorer, from the page, from another car, or a dry run. Mapping by hand
+  becomes autonomous mapping when 🧭 starts during it, and stays one run when SLAM goes on afterwards;
+- **navigation**: Nav2 on a saved map.
+
+A run is closed after 10 minutes without movement ("idle"); the next one starts when the car moves again.
+A run in which the car never moved, and that lasted less than a minute, is thrown away.
+
+One folder per run in `~/docker/tmp/runs/` on the car (`/home/ubuntu/shared/runs` in the container),
+`YYYYMMDD_HHMMSS_<car>/`, with
 
 - `events.jsonl`: a timeline with seconds since the start:
   - explorer state, message and goal, navigation goal state, shared map joined (whenever they change);
   - the car's position every second;
-  - every Nav2 warning or error, with the car's position at that moment;
+  - every Nav2 warning or error, and every bump, lift and tip, with the car's position at that moment;
+- `frames/`: a camera picture every second (320 × 240 JPEG, about 10 KB), named by the time;
+- `map.png`, `map.json`: the map (while mapping: the map as the page shows it, every 30 s and at the end;
+  navigating: the saved map);
 - `nav.log`: Nav2's whole output;
-- `bag/`: a ros2 bag of the lidar (raw and filtered), depth obstacles, odometry, TF, the maps and
-  costmaps, Nav2's plan, the controller's lookahead point and collision arc, and the drive commands.
-  It is not compressed (about 15 MB a minute);
-- `summary.json`: duration, goals, area mapped, the saved map, and Nav2 warnings counted by kind;
-- `run.json`: radius, dry run, together.
+- `bag/`: a ros2 bag of the lidar (raw and filtered), depth obstacles, odometry and the EKF's inputs, TF,
+  the maps and costmaps, Nav2's plan, the controller's lookahead point and collision arc, and the drive
+  commands. It is not compressed (about 15 MB a minute);
+- `summary.json`: duration, distance driven, area mapped, goals, the saved map, warnings, why it ended,
+  and Nav2 warnings counted by kind;
+- `run.json`: kind, radius, dry run, together, map.
 
-The newest 20 runs are kept, 10 GB at most. `GET /api/runs` lists them.
+The newest 50 runs are kept, 10 GB at most.
+
+**Runs tab** (Map panel): pick a run to see its summary and its map with the track (square: start),
+bumps / lifts / tips (orange ✕) and Nav2 errors (red). The slider, ▶ (10× speed) or a click on the map
+goes to a moment: the car's position and heading then, the camera picture, the explorer or navigation
+state and the last thing that happened. **⬇ Download** gets the whole folder as a zip (with the bag, for
+`ros2 bag play` or an EKF replay); **Delete** removes it (not while it is recording).
+
+HTTP: `GET /api/runs` (list), `/api/runs/<id>` (details and timeline), `/api/runs/<id>/map.png`,
+`/api/runs/<id>/frame/<t>.jpg`, `/api/runs/<id>/download` (zip); `POST /api/runs/<id>/delete`.
 
 ### Mapping together (two cars explore at once)
 

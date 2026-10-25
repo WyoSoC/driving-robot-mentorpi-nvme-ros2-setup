@@ -126,6 +126,18 @@
   .slam-bar select { background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
     border-radius: 8px; padding: 4px 6px; font: inherit; font-size: 12px; }
   .slam-bar[hidden] { display: none; }
+  a.btn { text-decoration: none; display: inline-block; }
+  a.btn.off { opacity: .5; pointer-events: none; }
+  #runsView[hidden] { display: none; }
+  .runs-time { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
+  .runs-time input[type=range] { flex: 1; min-width: 0; accent-color: var(--accent); }
+  #runsClock { font-variant-numeric: tabular-nums; font-size: 12px; min-width: 7em; text-align: right; }
+  .runs-detail { display: flex; gap: 8px; align-items: flex-start; margin-top: 6px; }
+  #runsFrame { width: 160px; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 6px; background: var(--panel-2);
+    flex: none; }
+  #runsFrame:not([src]) { visibility: hidden; }
+  #runsEvent { margin-top: 0; min-width: 0; overflow-wrap: anywhere; }
+  @media (max-width: 480px) { #runsFrame { width: 120px; } }
   .btn.tool-on { background: var(--accent); color: #111; border-color: var(--accent); }
   :root[data-theme="light"] #chargeBtn.on, :root[data-theme="light"] .btn.tool-on,
   :root[data-theme="light"] .estop.engaged { color: #fff; }   /* dark accents in light theme */
@@ -359,7 +371,7 @@
       <kbd>Space</kbd> = E-stop. The car stops if this page loses connection.</div>
   </section>
   <section class="panel" id="mapPanel">
-    <h2>Map <span class="right"><span class="tabs" id="mapTabs"><button data-mode="slam" class="active">Mapping</button><button data-mode="nav">Navigate</button><button data-mode="merge">Merge</button><button data-mode="maps">Maps</button></span>
+    <h2>Map <span class="right"><span class="tabs" id="mapTabs"><button data-mode="slam" class="active">Mapping</button><button data-mode="nav">Navigate</button><button data-mode="merge">Merge</button><button data-mode="maps">Maps</button><button data-mode="runs">Runs</button></span>
       <span class="pill" id="slamState"></span></span></h2>
     <div class="slam-bar" id="navBar" hidden>
       <select id="navMap" title="Saved maps on this car and on the other cars (copied here when navigation starts)"></select>
@@ -401,7 +413,24 @@
       <button class="btn" id="exploreBackout" title="Stuck? The car drives back along its own trail (or straight back), slowly, watching the lidar. While autonomous mapping runs, it then goes on.">↩ Back out</button>
       <span class="slam-info" id="slamMsg"></span>
     </div>
+    <div class="slam-bar" id="runsBar" hidden>
+      <select id="runsSel" title="Recorded runs on this car: mapping (by hand or autonomous) and navigation"></select>
+      <a class="btn" id="runsDownload" download title="Everything recorded in this run as a zip: timeline, camera pictures, map, Nav2 log, ros2 bag">⬇ Download</a>
+      <button class="btn" id="runsDelete">Delete</button>
+      <span class="slam-info" id="runsMsg"></span>
+    </div>
     <canvas id="slamMap"></canvas>
+    <div id="runsView" hidden>
+      <div class="runs-time">
+        <button class="btn odoz" id="runsPlay" title="Play the run (10× speed)">▶</button>
+        <input type="range" id="runsT" min="0" max="0" step="0.5" value="0" title="Time in the run">
+        <span id="runsClock">0:00</span>
+      </div>
+      <div class="runs-detail">
+        <img id="runsFrame" alt="Camera picture at this time">
+        <div class="slam-info" id="runsEvent"></div>
+      </div>
+    </div>
     <div class="slam-info" id="slamInfo">Lidar mapping with slam_toolbox. Drive slowly (≤ 0.3 m/s) and come back past
       your start point now and then so the map can close loops. Saved maps stay on this car.</div>
   </section>
@@ -1447,6 +1476,7 @@ function drawSlam() {
   if (mapMode === 'nav') return drawNav();
   if (mapMode === 'merge') return drawMerge();
   if (mapMode === 'maps') return drawMaps();
+  if (mapMode === 'runs') return drawRuns();
   const { ctx, w, h } = prepCanvas($('slamMap'));
   const st = slam.st, m = st && st.map, img = slam.img;
   if (!m || !img) {
@@ -1565,9 +1595,11 @@ function setMapMode(m) {
   mapMode = m;
   for (const b of $('mapTabs').children) b.classList.toggle('active', b.dataset.mode === m);
   $('slamBar').hidden = m !== 'slam'; $('navBar').hidden = m !== 'nav'; $('mergeBar').hidden = m !== 'merge';
-  $('mapsBar').hidden = m !== 'maps';
+  $('mapsBar').hidden = m !== 'maps'; $('runsBar').hidden = $('runsView').hidden = m !== 'runs';
   setTool(null);
-  if (m === 'nav') navPoll(); else if (m === 'merge') mergeLists(); else if (m === 'maps') mapsList(); else slamPoll();
+  if (m !== 'runs') runsPlay(false);
+  if (m === 'nav') navPoll(); else if (m === 'merge') mergeLists(); else if (m === 'maps') mapsList();
+  else if (m === 'runs') runsPoll(); else slamPoll();
   drawSlam();
 }
 $('mapTabs').addEventListener('click', e => { if (e.target.dataset.mode) setMapMode(e.target.dataset.mode); });
@@ -1601,6 +1633,203 @@ async function mapsPoll() {
 }
 setInterval(mapsPoll, 5000); mapsPoll();
 
+// ---------- Recorded runs (run_recorder.py) ----------
+// Every mapping and navigation run is recorded on the car. Pick one: its map with the track, warnings
+// (orange), Nav2 errors (red); the slider (or a click on the map) goes to a time: the car there, the
+// camera picture and what happened. Download gets all of it (with the ros2 bag) as a zip.
+const runs = { list: [], d: null, img: null, imgKey: null, frames: [], notable: [], states: [], timer: null,
+               loading: null };
+function fmtClock(t) { t = Math.max(0, Math.round(t)); const h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60;
+  return (h ? `${h}:${String(m).padStart(2, '0')}` : `${m}`) + ':' + String(t % 60).padStart(2, '0'); }
+function runWhen(r) { const d = new Date((r.started || 0) * 1000);
+  return r.started ? `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : r.id; }
+async function runsPoll() {
+  let j;
+  try { j = await (await fetch('/api/runs')).json(); } catch { return; }
+  runs.list = j.runs || [];
+  const sel = $('runsSel'), keep = sel.value;
+  const sig = runs.list.map(r => r.id + (r.recording ? '*' : '') + (r.duration_s || '')).join();
+  if (sel.dataset.sig !== sig) {
+    sel.dataset.sig = sig;
+    sel.innerHTML = runs.list.length ? runs.list.map(r => {
+      const dur = r.recording ? 'recording ●' : r.duration_s != null ? fmtClock(r.duration_s) : '?';
+      const dist = r.distance_m != null ? ` · ${r.distance_m} m` : '';
+      return `<option value="${esc(r.id)}">${esc(runWhen(r))} · ${esc(r.kind || '')} · ${dur}${dist}</option>`;
+    }).join('') : '<option value="">(no recorded runs)</option>';
+    sel.value = runs.list.some(r => r.id === keep) ? keep : (runs.list[0] ? runs.list[0].id : '');
+  }
+  const cur = runs.list.find(r => r.id === sel.value);
+  if (!cur) { runs.d = null; runsShow(); return; }
+  if (!runs.d || runs.d.id !== cur.id || cur.recording || runs.d.recording) runsLoad(cur.id);
+}
+async function runsLoad(id) {
+  if (runs.loading === id) return;
+  runs.loading = id;
+  let d;
+  try { const r = await fetch(`/api/runs/${encodeURIComponent(id)}`); d = r.ok ? await r.json() : null; } catch { d = null; }
+  runs.loading = null;
+  if (!d || $('runsSel').value !== id) return;
+  const fresh = !runs.d || runs.d.id !== id;
+  const atEnd = fresh || +$('runsT').value >= +$('runsT').max - 1;
+  runs.d = d;
+  runs.frames = (d.frames || []).map(n => [parseFloat(n), n]);
+  runs.states = d.events.filter(e => e.type === 'state');
+  runs.notable = d.events.filter(e => e.type === 'warn' || (e.type === 'nav2' && e.level === 'ERROR') ||
+                                      (e.type === 'state' && (e.message || e.nav_message)));
+  const end = Math.max(d.duration_s || 0, d.poses.length ? d.poses[d.poses.length - 1][0] : 0);
+  $('runsT').max = end;
+  if (fresh) $('runsT').value = 0; else if (atEnd) $('runsT').value = end;
+  const key = d.has_map ? `${id}|${d.recording ? Math.floor((d.duration_s || 0) / 30) : 'done'}` : null;
+  if (key !== runs.imgKey) {
+    runs.imgKey = key;
+    if (fresh) runs.img = null;
+    if (key) { const img = new Image(); img.onload = () => { if (runs.imgKey === key) { runs.img = img; drawSlam(); } };
+               img.src = `/api/runs/${encodeURIComponent(id)}/map.png?k=${encodeURIComponent(key)}`; }
+    else runs.img = null;
+  }
+  runsShow();
+}
+function runsShow() {
+  const d = runs.d;
+  $('runsDelete').disabled = !d || d.recording;
+  $('runsDownload').classList.toggle('off', !d);
+  if (d) $('runsDownload').href = `/api/runs/${encodeURIComponent(d.id)}/download`;
+  if (mapMode !== 'runs') return;
+  $('slamState').style.color = d && d.recording ? 'var(--ok)' : '';
+  $('slamState').textContent = d && d.recording ? 'recording' : '';
+  if (!d) {
+    $('slamInfo').textContent = 'Mapping and navigation runs are recorded here (the newest 50): the track, ' +
+      'camera pictures every second, the map, warnings, Nav2 messages, and a ros2 bag of the sensors.';
+  } else {
+    const bits = [`${d.kind}${d.map ? ` on "${d.map}"` : ''}`, d.duration_s != null ? fmtClock(d.duration_s) : null,
+      d.distance_m != null ? `${d.distance_m} m driven` : null, d.mapped_m2 != null ? `${d.mapped_m2} m² mapped` : null,
+      d.goals ? `goals: ${d.goals.reached} reached, ${d.goals.failed} failed` : null,
+      d.saved_as ? `saved as "${d.saved_as}"` : null, `${d.warnings || 0} warnings`,
+      `${d.nav2_messages || 0} Nav2 warnings/errors`, `${(d.frames || []).length} pictures`, `${d.size_mb} MB`,
+      d.end_reason ? `ended: ${d.end_reason}` : null, d.end_message ? `“${d.end_message}”` : null];
+    const top = Object.entries(d.nav2_by_kind || {}).slice(0, 2)
+      .map(([k, n]) => `${n}× ${k.length > 70 ? k.slice(0, 69) + '…' : k}`).join('; ');
+    $('slamInfo').textContent = bits.filter(Boolean).join(' · ') + (top ? ` · most common Nav2: ${top}` : '') +
+      ' · Blue: track, square: start, orange ✕: bump / lift / tip, red: Nav2 error. Click the map to jump there.';
+  }
+  runsAt();
+}
+function runsAt() {           // the slider moved: clock, picture, what happened
+  const d = runs.d, t = +$('runsT').value;
+  $('runsClock').textContent = d ? `${fmtClock(t)} / ${fmtClock(+$('runsT').max)}` : '0:00';
+  let fr = null;
+  for (const f of runs.frames) { if (f[0] <= t + 0.5) fr = f; else break; }
+  const img = $('runsFrame');
+  const src = d && fr ? `/api/runs/${encodeURIComponent(d.id)}/frame/${fr[1]}` : null;
+  if (!src) img.removeAttribute('src'); else if (img.getAttribute('src') !== src) img.src = src;
+  let st = null, ev = null;
+  if (d) {
+    for (const e of runs.states) { if (e.t <= t) st = e; else break; }
+    for (const e of runs.notable) { if (e.t <= t) ev = e; else break; }
+  }
+  const line = e => e.type === 'warn' ? `⚠ ${e.kind}${e.note ? ': ' + e.note : ''}`
+    : e.type === 'nav2' ? `Nav2 ${e.node}: ${e.msg}` : (e.message || e.nav_message || e.state);
+  const parts = [];
+  if (st) parts.push(`<b>${esc(st.state !== 'idle' ? `explorer: ${st.state}` : `navigation: ${st.nav_goal_state}`)}</b>`);
+  if (ev) parts.push(`${esc(fmtClock(ev.t))} ${esc(line(ev))}` + (t - ev.t > 30 ? ` <span style="opacity:.7">(${fmtClock(t - ev.t)} ago)</span>` : ''));
+  if (d && !fr && !runs.frames.length) parts.push('no camera pictures in this run');
+  $('runsEvent').innerHTML = parts.join('<br>');
+  drawSlam();
+}
+function runsPlay(on) {
+  clearInterval(runs.timer); runs.timer = null;
+  $('runsPlay').textContent = on ? '⏸' : '▶';
+  if (!on) return;
+  if (+$('runsT').value >= +$('runsT').max) $('runsT').value = 0;
+  runs.timer = setInterval(() => {
+    const t = Math.min(+$('runsT').max, +$('runsT').value + 1);
+    $('runsT').value = t; runsAt();
+    if (t >= +$('runsT').max) runsPlay(false);
+  }, 100);
+}
+$('runsPlay').onclick = () => runsPlay(!runs.timer);
+$('runsT').oninput = () => runsAt();
+$('runsSel').onchange = () => { runsPlay(false); $('runsMsg').textContent = ''; runs.d = null; runs.img = null;
+  runs.imgKey = null; runsPoll(); };
+$('runsDelete').onclick = async () => {
+  const d = runs.d;
+  if (!d || !confirm(`Delete the run of ${runWhen(d)} (${d.kind})?\n\nIts recording is gone for good.`)) return;
+  let j;
+  try { j = await (await fetch(`/api/runs/${encodeURIComponent(d.id)}/delete`, { method: 'POST' })).json(); }
+  catch (e) { j = { message: String(e) }; }
+  $('runsMsg').textContent = j.message || '';
+  if (j.message) log(`Runs: ${j.message}`);
+  runs.d = null; runsPoll();
+};
+setInterval(() => { if (mapMode === 'runs') runsPoll(); }, 3000);
+function runsView(w, h) {     // world (car frame of the poses) -> canvas
+  const d = runs.d, img = runs.img, mi = d && d.map_info;
+  const V = mi && mi.view, vc = V ? Math.cos(V[2]) : 1, vs = V ? Math.sin(V[2]) : 0;
+  const toS = (x, y) => V ? [V[0] + vc * x - vs * y, V[1] + vs * x + vc * y] : [x, y];
+  if (img && mi) {
+    const s = Math.min(w / img.width, h / img.height), ox = (w - img.width * s) / 2, oy = (h - img.height * s) / 2;
+    return { img, ox, oy, s, k: s / mi.resolution, toC: (x0, y0) => { const [x, y] = toS(x0, y0);
+      return [ox + (x - mi.origin[0]) / mi.resolution * s, oy + (img.height - (y - mi.origin[1]) / mi.resolution) * s]; } };
+  }
+  const P = d ? d.poses : [];   // no map: fit the track
+  let x0 = -1, x1 = 1, y0 = -1, y1 = 1;
+  if (P.length) { x0 = Math.min(...P.map(p => p[1])) - 0.5; x1 = Math.max(...P.map(p => p[1])) + 0.5;
+                  y0 = Math.min(...P.map(p => p[2])) - 0.5; y1 = Math.max(...P.map(p => p[2])) + 0.5; }
+  const k = Math.min(w / (x1 - x0), h / (y1 - y0)), ox = (w - (x1 - x0) * k) / 2, oy = (h - (y1 - y0) * k) / 2;
+  return { img: null, k, toC: (x, y) => [ox + (x - x0) * k, oy + (y1 - y) * k] };
+}
+function drawRuns() {
+  const { ctx, w, h } = prepCanvas($('slamMap'));
+  const d = runs.d;
+  if (!d) {
+    ctx.fillStyle = C.dim; ctx.font = '13px system-ui';
+    ctx.fillText(runs.list.length || !$('runsSel').dataset.sig ? 'Loading…' : 'No recorded runs yet', 12, 22);
+    return;
+  }
+  const v = runsView(w, h), t = +$('runsT').value;
+  if (v.img) { ctx.imageSmoothingEnabled = false; ctx.drawImage(themedMap(v.img), v.ox, v.oy, v.img.width * v.s, v.img.height * v.s); }
+  else { ctx.fillStyle = C.dim; ctx.font = '12px system-ui'; ctx.fillText(d.recording ? 'map: soon' : 'no map in this run', 12, 20); }
+  const P = d.poses;
+  if (P.length > 1) {
+    ctx.lineWidth = 2; ctx.strokeStyle = '#3fb6ff'; ctx.globalAlpha = 0.35; ctx.beginPath();
+    P.forEach((p, i) => { const [x, y] = v.toC(p[1], p[2]); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.stroke();
+    ctx.globalAlpha = 1; ctx.beginPath();                     // the part driven up to the slider
+    for (let i = 0; i < P.length && P[i][0] <= t; i++) { const [x, y] = v.toC(P[i][1], P[i][2]); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
+    ctx.stroke();
+    const [sx, sy] = v.toC(P[0][1], P[0][2]);
+    ctx.strokeStyle = '#d29922'; ctx.strokeRect(sx - 5, sy - 5, 10, 10);
+  }
+  for (const e of d.events) {
+    if (!e.pose || !(e.type === 'warn' || (e.type === 'nav2' && e.level === 'ERROR'))) continue;
+    const [x, y] = v.toC(e.pose[0], e.pose[1]);
+    if (e.type === 'warn') {
+      ctx.strokeStyle = '#f0883e'; ctx.lineWidth = 2.5; ctx.beginPath();
+      ctx.moveTo(x - 5, y - 5); ctx.lineTo(x + 5, y + 5); ctx.moveTo(x + 5, y - 5); ctx.lineTo(x - 5, y + 5); ctx.stroke();
+    } else { ctx.fillStyle = '#f85149'; ctx.beginPath(); ctx.arc(x, y, 3, 0, 2 * Math.PI); ctx.fill(); }
+  }
+  let cur = null;                                            // the car at the slider's time
+  for (const p of P) { if (p[0] <= t + 0.5) cur = p; else break; }
+  if (cur) {
+    const [x, y] = v.toC(cur[1], cur[2]), V = d.map_info && v.img ? d.map_info.view : null;
+    const a = cur[3] + (V ? V[2] : 0), r = Math.max(8, 0.15 * v.k);
+    ctx.save(); ctx.translate(x, y); ctx.rotate(-a);
+    ctx.fillStyle = '#f85149'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(r, 0); ctx.lineTo(-r * 0.6, r * 0.55); ctx.lineTo(-r * 0.6, -r * 0.55); ctx.closePath();
+    ctx.fill(); ctx.stroke(); ctx.restore();
+  }
+}
+$('slamMap').addEventListener('click', e => {     // Runs: jump to the nearest marker or track point
+  if (mapMode !== 'runs' || !runs.d) return;
+  const rect = $('slamMap').getBoundingClientRect(), mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  const v = runsView($('slamMap').clientWidth, $('slamMap').clientHeight);
+  let best = null, bd = 15 * 15;
+  const tryAt = (t, x0, y0, bonus) => { const [x, y] = v.toC(x0, y0), dd = (x - mx) ** 2 + (y - my) ** 2 - bonus;
+    if (dd < bd) { bd = dd; best = t; } };
+  for (const ev of runs.d.events) if (ev.pose && (ev.type === 'warn' || (ev.type === 'nav2' && ev.level === 'ERROR')))
+    tryAt(ev.t, ev.pose[0], ev.pose[1], 40);
+  for (const p of runs.d.poses) tryAt(p[0], p[1], p[2], 0);
+  if (best != null) { runsPlay(false); $('runsT').value = best; runsAt(); }
+});
 // ---------- Merging two maps (map_merge.py) ----------
 // Line up: finds the rotation + shift that puts map B on map A, shows both (A blue, B red, both purple)
 // and whether they match well enough; Save merged stores A + B as one map (synced to the other cars).
