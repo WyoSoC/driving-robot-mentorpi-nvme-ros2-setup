@@ -19,7 +19,7 @@ e = em.Explorer.__new__(em.Explorer)
 e.log = types.SimpleNamespace(info=print, warn=print)
 near = {'goal': [0.6, 0.4, 0.0], 'size': 1.0, 'share': 0.0, 'center': [0.6, 0.6]}
 far = {'goal': [2.0, 0.0, 0.0], 'size': 1.0, 'share': 0.0, 'center': [2.2, 0.0]}
-e.nav = types.SimpleNamespace(plan=lambda x, y, yaw: three_point if x < 1 else fwd)
+e.nav = types.SimpleNamespace(plan_path=lambda x, y, yaw: three_point if x < 1 else fwd)
 f = e._choose([near, far])
 print(f'2. nearer frontier needs a three-point turn, farther one is straight ahead: chose {"far" if f is far else "near"}')
 assert f is far
@@ -43,3 +43,14 @@ e.slam.pose = [0.6, 1.25, 0.0]                                        # at the s
 print(f'   at the start of the strip (unmapped behind): back free {e._known_free(180, 0.35)}, forward free {e._known_free(0, 0.35)}')
 assert not e._known_free(180, 0.35) and e._known_free(0, 0.35)
 print('ALL OK')
+
+# regression: nav_manager's path planner must not share a name with an attribute (self.plan = the current
+# path list hid a plan() method: autonomous mapping crashed with "'list' object is not callable")
+import ast, inspect, nav_manager
+tree = ast.parse(inspect.getsource(nav_manager.NavManager))
+methods = {n.name for n in tree.body[0].body if isinstance(n, ast.FunctionDef)}
+attrs = {t.attr for n in ast.walk(tree) if isinstance(n, ast.Assign) for t0 in n.targets
+         for t in (t0.elts if isinstance(t0, ast.Tuple) else [t0]) if isinstance(t, ast.Attribute)
+         and isinstance(t.value, ast.Name) and t.value.id == 'self'}
+assert not methods & attrs, f'NavManager attributes hide methods: {methods & attrs}'
+print('OK: no NavManager method hidden by an attribute')

@@ -193,7 +193,7 @@ class NavManager:
             fut.add_done_callback(done)
         return False
 
-    def plan(self, x, y, yaw, timeout=4.0):
+    def plan_path(self, x, y, yaw, timeout=4.0):
         """A path from where the car is to (x, y, yaw) without driving it: [[x, y, yaw], ...], or None."""
         if not self.running() or not self.plan_client.server_is_ready():
             return None

@@ -757,7 +757,7 @@ class Explorer:
         for f in fronts[:PLAN_TOP]:
             if time.monotonic() - t0 > PLAN_BUDGET_S:
                 break
-            path = self.nav.plan(*f['goal'])
+            path = self.nav.plan_path(*f['goal'])
             if not path:
                 continue
             rc = route_cost(path)
