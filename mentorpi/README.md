@@ -242,7 +242,7 @@ and its list of saved maps.
 On the page:
 
 - **Header:** a badge per other car with its battery and mode. Click it to open that car's page.
-- **Map panel, Navigate tab:**
+- **Mission panel, Navigate tab:**
   - The map list shows the maps on this car and on the other cars.
   - Picking a map previews it.
   - Starting navigation on another car's map first copies it here. If a different map already
@@ -297,7 +297,7 @@ Not covered yet:
 - During exploration each car has its own map, so none of this applies until the maps are lined up
   (next section).
 
-### Merging maps (Map panel → Merge)
+### Merging maps (Mission panel → Merge)
 
 Two maps of the same place, made by either car or in different runs, each have their own coordinate
 frame. `web_ui/map_merge.py` lines them up by their walls:
@@ -535,7 +535,7 @@ x 0.08. Used for:
 
 ### Navigation (Nav2)
 
-The Map panel's **Navigate** mode drives the car to a point on a saved map:
+The Mission panel's **Navigate** mode drives the car to a point on a saved map:
 1. Pick a map (saved in Mapping mode on this car), press **Start navigation** (~20 s).
 2. The car **finds its position by itself** once Nav2 is up: put it down anywhere on the mapped floor,
    facing any way. `web_ui/localize.py` matches one lidar scan against the whole map (every free spot
@@ -620,7 +620,7 @@ no readings from glossy floors at all, so it can't detect drops reliably yet.
 
 ### Exploration (the car maps by itself)
 
-Map panel, **Mapping** mode: pick a distance limit (3, 5 or 8 m, or none) and press **🧭 Autonomous mapping**.
+Mission panel, **Mapping** mode: pick a distance limit (3, 5 or 8 m, or none) and press **🧭 Autonomous mapping**.
 The car then works like this (`web_ui/explore_manager.py`):
 
 1. It starts mapping (if mapping isn't already running) and navigation on the live map
@@ -661,7 +661,7 @@ map complete. In tight spots the steering also hunted: forward and reverse switc
     along its own trail, or straight back, and go on. That frontier stays a target.
   - After 3 escapes in a row that didn't help, autonomous mapping stops with "stuck: … press Back out".
     It no longer writes off every frontier and declares the map complete.
-- **↩ Back out** (Map panel): the same move by hand. It drives back along the car's own trail, or
+- **↩ Back out** (Mission panel): the same move by hand. It drives back along the car's own trail, or
   straight back if there is no trail, at 6 cm/s, stopping for anything the lidar sees close. While
   autonomous mapping runs, it then goes on; otherwise it just moves. E-STOP, the joystick or Stop
   ends it.
@@ -804,7 +804,7 @@ One folder per run in `~/docker/tmp/runs/` on the car (`/home/ubuntu/shared/runs
 
 The newest 50 runs are kept, 10 GB at most.
 
-**Runs tab** (Map panel): pick a run to see its summary and its map with the track (square: start),
+**Runs tab** (Mission panel): pick a run to see its summary and its map with the track (square: start),
 bumps / lifts / tips (orange ✕) and Nav2 errors (red). The slider, ▶ (10× speed) or a click on the map
 goes to a moment: the car's position and heading then, the camera picture, the explorer or navigation
 state and the last thing that happened. **⬇ Download** gets the whole folder as a zip (with the bag, for

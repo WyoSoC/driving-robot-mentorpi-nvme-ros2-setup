@@ -371,7 +371,7 @@
       <kbd>Space</kbd> = E-stop. The car stops if this page loses connection.</div>
   </section>
   <section class="panel" id="mapPanel">
-    <h2>Map <span class="right"><span class="tabs" id="mapTabs"><button data-mode="slam" class="active">Mapping</button><button data-mode="nav">Navigate</button><button data-mode="merge">Merge</button><button data-mode="maps">Maps</button><button data-mode="runs">Runs</button></span>
+    <h2>Mission <span class="right"><span class="tabs" id="mapTabs"><button data-mode="slam" class="active">Mapping</button><button data-mode="nav">Navigate</button><button data-mode="merge">Merge</button><button data-mode="maps">Maps</button><button data-mode="runs">Runs</button></span>
       <span class="pill" id="slamState"></span></span></h2>
     <div class="slam-bar" id="navBar" hidden>
       <select id="navMap" title="Saved maps on this car and on the other cars (copied here when navigation starts)"></select>
@@ -1372,7 +1372,7 @@ pollCharging();
 // ---------- Map (SLAM) ----------
 // The server renders /map to a PNG and tracks the pose in the map frame (slam_manager.py).
 const slam = { st: null, img: null, imgVersion: 0, path: [] };
-let mapMode = 'slam';   // 'slam' (Mapping) or 'nav' (Navigate): which one the Map panel shows
+let mapMode = 'slam';   // 'slam' (Mapping) or 'nav' (Navigate): which one the Mission panel shows
 async function slamApi(action, query = '') {
   const r = await fetch(`/api/slam/${action}${query}`, { method: 'POST' });
   const j = await r.json().catch(() => ({ message: r.statusText }));
