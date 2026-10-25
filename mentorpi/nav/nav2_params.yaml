@@ -175,14 +175,14 @@ local_costmap:
       height: 3
       resolution: 0.05
       footprint: "[[0.11, 0.09], [0.11, -0.09], [-0.11, -0.09], [-0.11, 0.09]]"   # web_ui/car_geometry.py
-      footprint_padding: 0.02
+      footprint_padding: 0.0       # the measured rectangle itself (car_geometry.py)
       plugins: ["obstacle_layer", "depth_layer", "fleet_layer", "inflation_layer"]
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true
         observation_sources: scan
         scan:
-          topic: /scan_raw
+          topic: /scan_nav            # /scan_raw without readings inside the car (scan_filter.py)
           data_type: "LaserScan"
           max_obstacle_height: 2.0
           clearing: true
@@ -190,8 +190,8 @@ local_costmap:
           raytrace_max_range: 6.0
           raytrace_min_range: 0.0
           obstacle_max_range: 4.0
-          obstacle_min_range: 0.16    # closer = inside / touching the car (curtain, cables): marked under
-                                      # the car it made the planner refuse to start ("lethal space")
+          obstacle_min_range: 0.0     # /scan_nav (web_ui/scan_filter.py) already drops readings inside the
+                                      # car's rectangle (touching cables / curtains); everything outside counts
       depth_layer:                    # depth camera (web_ui/depth_obstacles.py): obstacles 4-22 cm high in
         plugin: "nav2_costmap_2d::ObstacleLayer"   # front, which the lidar plane (16 cm) misses. Own layer:
         enabled: true                 # the lidar passing over a shoe must not erase the camera's mark.
@@ -248,7 +248,7 @@ global_costmap:
       resolution: 0.05
       track_unknown_space: true
       footprint: "[[0.11, 0.09], [0.11, -0.09], [-0.11, -0.09], [-0.11, 0.09]]"   # web_ui/car_geometry.py
-      footprint_padding: 0.02
+      footprint_padding: 0.0       # the measured rectangle itself (car_geometry.py)
       plugins: ["static_layer", "obstacle_layer", "depth_layer", "fleet_layer", "inflation_layer"]
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
@@ -258,7 +258,7 @@ global_costmap:
         enabled: true
         observation_sources: scan
         scan:
-          topic: /scan_raw
+          topic: /scan_nav            # /scan_raw without readings inside the car (scan_filter.py)
           data_type: "LaserScan"
           max_obstacle_height: 2.0
           clearing: true
@@ -266,8 +266,8 @@ global_costmap:
           raytrace_max_range: 6.0
           raytrace_min_range: 0.0
           obstacle_max_range: 4.0
-          obstacle_min_range: 0.16    # closer = inside / touching the car (curtain, cables): marked under
-                                      # the car it made the planner refuse to start ("lethal space")
+          obstacle_min_range: 0.0     # /scan_nav (web_ui/scan_filter.py) already drops readings inside the
+                                      # car's rectangle (touching cables / curtains); everything outside counts
       depth_layer:                    # depth camera (web_ui/depth_obstacles.py): obstacles 4-22 cm high in
         plugin: "nav2_costmap_2d::ObstacleLayer"   # front, which the lidar plane (16 cm) misses. Own layer:
         enabled: true                 # the lidar passing over a shoe must not erase the camera's mark.
@@ -404,7 +404,7 @@ collision_monitor:
       polygon_pub_topic: "collision_stop_zone"
     FootprintApproach:           # slow down so the car never hits anything within 1.2 s, either direction
       type: "polygon"
-      points: [0.12, 0.10, 0.12, -0.10, -0.12, -0.10, -0.12, 0.10]   # car (car_geometry.py) + 1 cm
+      points: [0.11, 0.09, 0.11, -0.09, -0.11, -0.09, -0.11, 0.09]   # the car (car_geometry.py)
       action_type: "approach"
       time_before_collision: 1.2
       simulation_time_step: 0.1
@@ -413,7 +413,7 @@ collision_monitor:
     observation_sources: ["scan", "depth"]
     scan:
       type: "scan"
-      topic: /scan_raw
+      topic: /scan_nav           # without readings inside the car (scan_filter.py)
     depth:                       # depth camera obstacles (low things the lidar plane misses), in front only
       type: "scan"
       topic: /depth/scan

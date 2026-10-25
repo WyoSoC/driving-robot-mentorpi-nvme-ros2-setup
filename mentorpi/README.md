@@ -128,6 +128,7 @@ Manual start without systemd (in this order):
 │   ├── shared_map.py        the shared map: keyframes exchanged, same map on every car
 │   ├── localize.py          find the car on a saved map from one lidar scan
 │   ├── car_geometry.py      the car's measured shape and sensor positions (used everywhere)
+│   ├── scan_filter.py       /scan_nav: lidar without readings inside the car's rectangle
 │   ├── explore_manager.py   autonomous mapping (frontier exploration)
 │   ├── depth_obstacles.py   depth camera obstacles (/depth/scan) + comparison with the lidar
 │   ├── map_store.py         saved maps + content hash (same map on two cars?)
@@ -416,6 +417,11 @@ x 0.08. Used for:
   and 1.1 cm higher; its direction still comes from TF;
 - the other car's body in `fleet.py`;
 - the bumper distances for the creep-out and escape moves (`nav_manager.py`, `explore_manager.py`).
+- the lidar readings Nav2 ignores. `web_ui/scan_filter.py` republishes `/scan_raw` as `/scan_nav`, with
+  only the readings inside the car's rectangle (cables, a curtain touching the car) set to invalid. Nav2's
+  obstacle layers and the collision monitor use `/scan_nav` with no minimum range. Before, a 16 cm radius
+  around the lidar was ignored: anything 4 cm in front of the bumper or 7 cm beside the car never
+  reached the obstacle map. No padding is added to the footprint either.
 
 ### Navigation (Nav2)
 

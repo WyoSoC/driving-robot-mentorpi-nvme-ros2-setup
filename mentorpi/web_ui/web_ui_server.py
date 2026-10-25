@@ -69,6 +69,7 @@ from explore_manager import Explorer
 from fleet import Fleet
 from team import Team
 from shared_map import SharedMap
+from scan_filter import ScanFilter
 from nav_manager import NavManager
 from peer_manager import PeerManager
 from slam_manager import SlamManager
@@ -124,6 +125,7 @@ class WebBridge(Node):
         self.slam = SlamManager(self)
         self.nav = NavManager(self, self.slam.tf, self.slam)
         self.depth_obs = DepthObstacles(self, self.slam.tf)   # /depth/scan + /depth/compare
+        self.scan_filter = ScanFilter(self)       # /scan_nav: lidar without readings inside the car
         self.explorer = Explorer(self, self.slam, self.nav, CAR_NAME)
         self.peers = PeerManager(CAR_NAME, PEERS, self.get_logger())
         self.peers.in_use = self.map_in_use
