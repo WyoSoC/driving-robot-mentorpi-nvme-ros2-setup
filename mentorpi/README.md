@@ -153,6 +153,61 @@ Manual start without systemd (in this order):
   for 0.5 s while moving (e.g. Wi-Fi drop), and caps speed at 0.7 m/s and steering at 40°.
 - **No authentication**: anyone who can reach port 8000/9090 can drive the car.
 
+### API (programs on other computers)
+
+`web_ui/robot_api.py` adds `/api/v1/...` to the page's port: drive the car and read everything over plain
+HTTP + JSON, from any computer that can open the page (tailnet `https://<car>.<tailnet>.ts.net`, local
+network `http://<car ip>:8000` or `https://<car ip>`). `client/mentorpi_client.py` is a Python client
+(standard library only: copy the one file); `client/example.py` reads everything and, with `--drive`,
+drives 20 cm forward and back (it asks first):
+
+```bash
+python3 client/example.py http://<car ip>:8000             # read only; pictures saved in the current folder
+python3 client/example.py https://<car ip> --insecure --show   # local https, live video window (opencv-python)
+python3 client/example.py http://<car ip>:8000 --drive     # also drive
+```
+
+```python
+from mentorpi_client import Car
+car = Car('http://<car ip>:8000')
+car.battery()                  # {'voltage': 7.26, 'level': 'ok', 'soc': 64, 'state': 'discharging', 'eta_min': 95, ..., 'charging_mode': 'off'}
+car.state()                    # everything: mode, drive, odom, map_pose, imu, lidar summary, battery, safety, depth, slam, nav, explore
+car.drive_for(0.15, steer=10, seconds=2)   # m/s (+ forward), degrees (+ left); stops for obstacles
+for jpeg in car.video(): ...   # live MJPEG frames
+for s in car.stream(hz=5): ... # live state
+```
+
+| | |
+|---|---|
+| `GET /api/v1` | car name, limits, endpoint list |
+| `GET /api/v1/state` | everything at once (see above) |
+| `GET /api/v1/stream?hz=5` | the same, pushed `hz` times a second (Server-Sent Events, `data: {json}` lines; 0.2–20) |
+| `GET /api/v1/battery` | voltage, level (ok / low < 6.9 V / critical < 6.6 V), charge %, charging / in use / steady / full, minutes to empty or full, charging mode |
+| `GET /api/v1/odom` | EKF odometry since start: x, y, heading, speed, turn rate |
+| `GET /api/v1/imu` | roll, pitch, heading, accelerations, turn rates |
+| `GET /api/v1/lidar` | the whole scan (ranges in m, `null` = no reading; lidar frame = car's orientation) |
+| `GET /api/v1/camera.jpg?view=rgb\|depth` | one picture |
+| `GET /api/v1/video?view=rgb\|depth&width=&quality=` | MJPEG stream (through the page's port: nothing else to open) |
+| `GET /api/v1/depth.png` / `depth/camera` | the depth image (16-bit PNG, mm) / its intrinsics and mounting |
+| `POST /api/v1/drive` | `{"speed": m/s, "steer": deg, "duration": s, "safe": true, "dry": false}` → 200, or 409 with the reason |
+| `POST /api/v1/stop` · `/horn` · `/charging {"on": true}` | stop now · beep · charging mode |
+
+Driving rules:
+- A command holds for `duration` (default 0.5 s, at most 3 s), then the car stops by itself: a program that
+  hangs or loses the connection stops the car. Send the next command before it runs out (`drive_for` does).
+- The page's limits: 0.7 m/s, 40° steering. The car steers its front wheels (it can't turn on the spot).
+- `safe` (default on): the lidar watches the strip the car will sweep along its steering arc (car width + 3 cm).
+  The car refuses, or stops, when something there is nearer than the stopping distance (0.15 m past the
+  bumper + speed × 0.25 s + braking: 0.22 m at 0.2 m/s, 0.57 m at 0.7 m/s). `path_clear_m` in the answer is the
+  free distance (`null`: nothing in the path). The lidar is 16 cm up and misses low things (cables,
+  thresholds). `dry: true` checks without moving.
+- Refused while charging mode is on, while the car is lifted and during autonomous mapping; a navigation
+  goal is cancelled (like the page's joystick). Driving or E-STOP on the page cancels the program's command.
+- No authentication, like the page: anyone who can open the page can use the API.
+
+The page's own endpoints (navigation goals, SLAM, maps, audio, runs: `web_ui_server.py`'s docstring) work
+the same way; the client wraps `say()`, `nav_go()` and `nav_cancel()`.
+
 ---
 
 ## Layout
@@ -176,7 +231,10 @@ Manual start without systemd (in this order):
 │                            each other), test_merge.py (map merging), test_localize.py (finding the car on a map),
 │                            test_depth_sim.py (depth threat levels)
 │                            test_runs.py (run recording, Runs tab data, zip), test_vlm.py (VLM server fallback),
-│                            test_depth_record.py (depth images in runs, floor-fit reasons, replay)
+│                            test_depth_record.py (depth images in runs, floor-fit reasons, replay),
+│                            test_api.py (API driving: path check, refusals, timeout, the page winning)
+├── client/                  for programs on other computers: mentorpi_client.py (Python client of
+│                            the API, standard library only) and example.py
 ├── install.sh               installs/updates everything on a car (idempotent)
 ├── make_bundle.sh           packages kit + Docker image for transfer
 ├── system/                  udev rules + systemd unit templates
@@ -201,6 +259,7 @@ Manual start without systemd (in this order):
 │   ├── explore_manager.py   autonomous mapping (frontier exploration)
 │   ├── depth_obstacles.py   depth camera obstacles (/depth/scan) + comparison with the lidar
 │   ├── map_store.py         saved maps + content hash (same map on two cars?)
+│   ├── robot_api.py         /api/v1: drive (with a lidar stop) and read everything from other computers
 │   └── start_web_ui.sh
 ```
 

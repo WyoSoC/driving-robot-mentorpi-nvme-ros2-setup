@@ -37,6 +37,9 @@
   raw 16 kHz mono s16le), POST /api/audio/talk (body: the same format), POST /api/audio/say?text=,
   POST /api/audio/volume?speaker=&mic= (0-100).
 - Lidar odometry (lidar_odometry.py): rf2o_laser_odometry -> /odom_lidar (not fused into /odom yet: compare first).
+- API for programs on other computers (robot_api.py): /api/v1/... drive (with a lidar stop), state, live
+  state stream, lidar, IMU, odometry, battery, charging, camera picture, video, depth image. Client and example:
+  mentorpi/client/.
 - Run recordings (run_recorder.py): every mapping and navigation run is recorded (timeline, camera frames,
   map, Nav2 log, ros2 bag); GET /api/runs lists them, the page's Runs tab plays them back.
 - Managing maps (Mission panel -> Maps): POST /api/maps/rename?name=&to= | /api/maps/delete?name= (here, then on the
@@ -88,6 +91,7 @@ from lift_detector import LiftDetector
 from lidar_odometry import LidarOdometry
 from audio import Audio
 from vlm_client import VLM
+import robot_api
 import queue
 from nav_manager import NavManager
 from peer_manager import PeerManager
@@ -165,6 +169,8 @@ class WebBridge(Node):
         self.recorder = RunRecorder(self, self.explorer, self.nav, self.slam, CAR_NAME, self.team)  # runs/
         self.merge_lock = threading.Lock()
         self.merge_cache = {}      # (hash a, hash b) -> align result
+        self.car_name = CAR_NAME
+        self.api = robot_api.RobotAPI(self)        # /api/v1: programs on other computers (robot_api.py)
 
     def lifted(self):
         return self.lift.lifted
@@ -293,6 +299,11 @@ class WebBridge(Node):
         self.get_logger().info(f'charging mode {"on" if on else "off"} requested')
 
     def on_cmd(self, msg):
+        """/web/cmd_vel: the page's joystick, keys, gamepad and E-STOP."""
+        self.api.cancel_by_page()                              # the person at the page wins over a program
+        self.send_drive(msg)
+
+    def send_drive(self, msg):
         if (msg.linear.x or msg.angular.z) and (self.nav.goal_active() or self.nav.goal_state in ('yielding', 'nudging')):
             self.nav.cancel('goal canceled: manual driving')   # the person at the joystick wins
             self.get_logger().info('navigation goal canceled by manual driving')
@@ -317,6 +328,7 @@ class WebBridge(Node):
         self.battery.add(time.monotonic(), self.battery_v)
 
     def on_odom(self, msg):
+        self.api.on_odom(msg)
         self.speed = msg.twist.twist.linear.x
         if abs(msg.twist.twist.linear.x) > DRIVING_SPEED:
             self.battery.driving(time.monotonic())
@@ -327,6 +339,7 @@ class WebBridge(Node):
             self.battery_pub.publish(String(data=json.dumps(self.battery_st)))
 
     def on_depth(self, msg):
+        self.api.depth_msg = msg                   # GET /api/v1/depth.png
         if self.depth_pub.get_subscription_count() == 0:
             return
         now = time.monotonic()
@@ -386,6 +399,8 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         url = urllib.parse.urlparse(self.path)
         slam = self.node.slam
+        if url.path.startswith('/api/v1'):
+            return robot_api.handle_get(self, self.node.api)
         if url.path == '/api/audio':
             return self._send(200, self.node.audio.status())
         if url.path == '/api/audio/listen':
@@ -518,6 +533,8 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         url = urllib.parse.urlparse(self.path)
         slam = self.node.slam
+        if url.path.startswith('/api/v1'):
+            return robot_api.handle_post(self, self.node.api)
         if url.path == '/api/vlm/look':
             return self._send(200, self._vlm_look())
         if url.path.startswith('/api/runs/') and url.path.endswith('/delete'):
