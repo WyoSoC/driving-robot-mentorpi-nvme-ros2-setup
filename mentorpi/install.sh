@@ -113,7 +113,7 @@ step "systemd services"
 mkdir -p "$HOME/docker/tmp" "$DIR/state"
 for unit in mentorpi-container.service mentorpi-bringup.service mentorpi-webui.service \
             mentorpi-watchdog.service mentorpi-watchdog.timer \
-            mentorpi-charging.service mentorpi-charging.path; do
+            mentorpi-charging.service mentorpi-charging.path mentorpi-lan-https.service; do
     sed -e "s|@USER@|$USER|g" -e "s|@DIR@|$DIR|g" "$DIR/system/$unit" \
         | sudo tee "/etc/systemd/system/$unit" >/dev/null
 done
@@ -122,6 +122,7 @@ if [ "$ENABLE" = 1 ]; then
     sudo systemctl enable mentorpi-container mentorpi-bringup mentorpi-webui >/dev/null 2>&1
     sudo systemctl enable --now mentorpi-watchdog.timer >/dev/null 2>&1
     sudo systemctl enable --now mentorpi-charging.path >/dev/null 2>&1
+    sudo systemctl enable --now mentorpi-lan-https >/dev/null 2>&1
     ok "installed and enabled at boot"
 else
     ok "installed (not enabled)"
@@ -138,6 +139,28 @@ if command -v tailscale >/dev/null && tailscale status --self --json 2>/dev/null
     || warn "tailscale serve failed (see README: HTTPS)"
 else
     warn "skipped: Tailscale not running, or HTTPS certificates not enabled for the tailnet (README: HTTPS)"
+fi
+
+step "HTTPS on the local network"
+# system/lan_https.py (service mentorpi-lan-https): https://<car ip>/ and https://<car>.local/ with a self-signed
+# certificate. <car>.local should name the local address only: Avahi announces it on Wi-Fi / Ethernet, not on
+# Tailscale or Docker (whose addresses a phone on the local network can't use).
+LAN_IFS=$(ip -o link | awk -F': ' '{print $2}' | sed 's/@.*//' | grep -E '^(eth|wlan|en|wl)' | paste -sd, -)
+if [ -f /etc/avahi/avahi-daemon.conf ] && [ -n "$LAN_IFS" ]; then
+    if grep -qE '^#?allow-interfaces=' /etc/avahi/avahi-daemon.conf; then
+        sudo sed -i -E "s/^#?allow-interfaces=.*/allow-interfaces=$LAN_IFS/" /etc/avahi/avahi-daemon.conf
+    else
+        sudo sed -i "/^\[server\]/a allow-interfaces=$LAN_IFS" /etc/avahi/avahi-daemon.conf
+    fi
+    sudo systemctl restart avahi-daemon 2>/dev/null || true
+fi
+if systemctl is-active --quiet mentorpi-lan-https; then
+    for ip in $(ip -4 -o addr show | awk '$2 !~ /^(lo|docker|tailscale|veth|br-)/ {split($4, a, "/"); print a[1]}'); do
+        ok "https://$ip/  (self-signed certificate: accept it once)"
+    done
+    ok "https://$(hostname -s).local/"
+else
+    warn "mentorpi-lan-https not running (enable it: sudo systemctl enable --now mentorpi-lan-https)"
 fi
 
 step "Done"

@@ -113,7 +113,7 @@ Manual start without systemd (in this order):
   Talk and Say share the speaker, one at a time. API: `GET /api/audio`, `GET /api/audio/listen` (raw
   16 kHz mono s16le), `POST /api/audio/talk` (body: the same), `POST /api/audio/say?text=`,
   `POST /api/audio/volume?speaker=&mic=`. Anyone who can open the page can listen: the page has no
-  login, and the tailnet is the access control.
+  login: the tailnet and the local network are the access control.
 - **HTTPS**: every car is also at `https://<car>.<tailnet>.ts.net/`, through Tailscale serve
   (tailnet only, real certificate, kept across reboots; set up by `install.sh`):
 
@@ -127,6 +127,17 @@ Manual start without systemd (in this order):
   Needed for talking through the car (microphone). Needs MagicDNS and HTTPS certificates enabled for
   the tailnet. Set up by hand: `sudo tailscale serve --bg --https=443 http://127.0.0.1:8000`, and the same
   for 8443 → 9090 and 8444 → 8080. `sudo tailscale serve status` lists them.
+- **Local network**: without Tailscale, open `http://<car ip>:8000/` or, for the microphone and gamepads
+  (browsers only allow them on secure pages), `https://<car ip>/` or `https://<car>.local/`. The service
+  `mentorpi-lan-https` (`system/lan_https.py`, set up by `install.sh`) listens on the car's local
+  addresses on the same ports as Tailscale serve (443, 8443, 8444) and forwards to 8000, 9090 and 8080.
+  Its certificate is self-signed (made on the car, in `state/lan_https/`, for `<car>.local` and its
+  local IPs), so the browser warns the first time: accept it. Browsers that keep certificate exceptions
+  per port (Firefox) also need it accepted for 8443 and 8444; the page shows those links when the robot
+  connection or video doesn't come up. A new Wi-Fi address is picked up within 20 s (the certificate is
+  then remade, one more warning). `install.sh` also limits Avahi to Wi-Fi / Ethernet, so `<car>.local`
+  names the local address and not the Tailscale one. Anyone on the same local network can open the
+  page and drive the car: use it on networks you trust.
 - **Sensors**: lidar radar view (1–8 m), IMU attitude and heading, odometry trail,
   battery voltage (2S pack, % is approximate), per-sensor health lights, event log.
 - **Battery warnings**: the page shows "low" below 6.9 V and "critical" below 6.6 V. The board's own

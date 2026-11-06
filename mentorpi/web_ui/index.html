@@ -254,6 +254,7 @@
   <span class="pill" id="battPill" title="Battery">🔋 <span id="battText">--</span></span>
   <button class="btn" id="chargeBtn" aria-pressed="false">⚡ Charging mode: off</button>
   <span id="peerPills" style="display:contents"></span>
+  <span class="pill" id="certHint" hidden style="color:var(--warn);border-color:var(--warn)"></span>
   <span class="spacer"></span>
   <span class="gp-wrap au-wrap">
     <button class="btn gp-btn" id="auBtn" aria-haspopup="true" aria-expanded="false" title="Audio: listen to the car, talk or let it speak">
@@ -486,6 +487,10 @@ const HOST = location.hostname || 'localhost';
 const SECURE = location.protocol === 'https:';
 const ROSBRIDGE_URL = SECURE ? `wss://${HOST}:8443` : `ws://${HOST}:9090`;
 const VIDEO_URL = SECURE ? `https://${HOST}:8444` : `http://${HOST}:8080`;
+// Opened at a local-network address (IP or <car>.local) instead of the tailnet name: https there comes from
+// system/lan_https.py on the same ports, with a self-signed certificate the browser must accept (README "Local network").
+const LAN_HOST = !/\.ts\.net$/.test(HOST) && !/^100\./.test(HOST) && !['localhost', '127.0.0.1', '[::1]'].includes(HOST);
+const SECURE_URL = port => `https://${HOST}${port ? ':' + port : ''}/`;
 const VIDEO_TOPICS = {
   rgb: '/ascamera/camera_publisher/rgb0/image',
   depth: '/web/depth_color',
@@ -640,7 +645,23 @@ const ros = new RosBridge(ROSBRIDGE_URL, up => {
   sensors.rosbridge.ok = up; sensors.rosbridge.info = up ? HOST + ':9090' : 'retrying…';
   log(up ? 'Connected to rosbridge' : 'rosbridge connection lost, retrying');
   if (!up) releaseAll();
+  certHintUpdate();
 });
+// Local https page: rosbridge (8443) and video (8444) have the same self-signed certificate on other ports;
+// a browser that keeps certificate exceptions per port (Firefox) refuses them until each is accepted once.
+let certHintAt = performance.now();
+function certHintUpdate() {
+  const el = $('certHint');
+  if (!SECURE || !LAN_HOST) return;
+  const bad = [];
+  if (!sensors.rosbridge.ok) bad.push(['robot connection', 8443]);
+  if (!sensors.video.ok && sensors.video.info === 'retrying…') bad.push(['video', 8444]);
+  const show = bad.length && performance.now() - certHintAt > 4000;
+  el.hidden = !show;
+  if (show) el.innerHTML = 'Accept the certificate for ' + bad.map(([what, port]) =>
+    `<a href="${SECURE_URL(port)}" target="_blank" rel="noopener">${what}</a>`).join(' and ') + ', then reload';
+}
+setInterval(certHintUpdate, 2000);
 ros.advertise(CMD_TOPIC, 'geometry_msgs/msg/Twist');
 ros.advertise('/ros_robot_controller/set_buzzer', 'ros_robot_controller_msgs/msg/BuzzerState');
 
@@ -761,7 +782,8 @@ function gpStatus() {
     : !gamepad.supported || !navigator.getGamepads ? 'This browser does not give this page access to gamepads'
     : 'No gamepad: connect one, then press any button on it';
   if (!gamepad.supported || !navigator.getGamepads)
-    $('gpNote').textContent = 'Use Chrome or Edge (they allow gamepads on this http page), or open the page on the car itself (http://localhost:8000).';
+    $('gpNote').innerHTML = isSecureContext ? 'Use Chrome or Edge.'
+      : `Open the secure page: <a href="${esc(SECURE_URL())}">https</a> (some browsers only give gamepads to secure pages).`;
 }
 addEventListener('gamepadconnected', e => { log(`Gamepad connected: ${e.gamepad.id}`); gamepad.index = null; gpStatus(); });
 addEventListener('gamepaddisconnected', e => {
@@ -854,8 +876,9 @@ async function auListen() {
 async function auTalkStart() {
   if (au.talking) return;
   if (!isSecureContext || !navigator.mediaDevices) {
-    $('auTalkMsg').innerHTML = au.st && au.st.https_url
-      ? `Your microphone needs the secure page: <a href="${esc(au.st.https_url)}">${esc(au.st.https_url)}</a>`
+    const url = LAN_HOST && !SECURE ? SECURE_URL() : au.st && au.st.https_url;
+    $('auTalkMsg').innerHTML = url
+      ? `Your microphone needs the secure page: <a href="${esc(url)}">${esc(url)}</a>`
       : 'Your microphone needs a secure (https) page.';
     return;
   }
