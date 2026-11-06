@@ -1,5 +1,5 @@
 [Unit]
-Description=MentorPi page over HTTPS on the local network (443/8443/8444 on local addresses)
+Description=MentorPi page over HTTPS on the local network (80 redirect, 443/8443/8444 on local addresses)
 After=network-online.target
 Wants=network-online.target
 

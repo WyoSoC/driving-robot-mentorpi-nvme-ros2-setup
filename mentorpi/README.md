@@ -127,7 +127,7 @@ Manual start without systemd (in this order):
   Needed for talking through the car (microphone). Needs MagicDNS and HTTPS certificates enabled for
   the tailnet. Set up by hand: `sudo tailscale serve --bg --https=443 http://127.0.0.1:8000`, and the same
   for 8443 → 9090 and 8444 → 8080. `sudo tailscale serve status` lists them.
-- **Local network**: without Tailscale, open `http://<car ip>:8000/` or, for the microphone and gamepads
+- **Local network**: without Tailscale, open `http://<car ip>` (redirects to https), `http://<car ip>:8000/` or, for the microphone and gamepads
   (browsers only allow them on secure pages), `https://<car ip>/` or `https://<car>.local/`. The service
   `mentorpi-lan-https` (`system/lan_https.py`, set up by `install.sh`) listens on the car's local
   addresses on the same ports as Tailscale serve (443, 8443, 8444) and forwards to 8000, 9090 and 8080.

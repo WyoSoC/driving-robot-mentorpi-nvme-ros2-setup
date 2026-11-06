@@ -8,6 +8,7 @@ plain-http pages that aren't localhost. This adds the same three HTTPS ports on 
   443  -> 127.0.0.1:8000  the page
   8443 -> 127.0.0.1:9090  rosbridge (the page uses wss://<host>:8443 when it was opened over https)
   8444 -> 127.0.0.1:8080  video
+  80      plain http: redirects to https://<same host>/, so typing just the car's IP in a browser works
 
 It decrypts and forwards bytes, nothing else. The certificate is self-signed (made here once, for
 <hostname>.local, <hostname> and the car's local IPs), so the browser warns the first time: accept it.
@@ -23,6 +24,7 @@ import subprocess
 import sys
 
 PORTS = {443: 8000, 8443: 9090, 8444: 8080}
+REDIRECT_PORT = 80
 RESCAN_S = 20
 CERT_DIR = os.environ.get('LAN_HTTPS_DIR') or os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'state', 'lan_https')
 SKIP_NETS = [ipaddress.ip_network(n) for n in ('127.0.0.0/8', '100.64.0.0/10', '169.254.0.0/16', '172.17.0.0/16',
@@ -116,6 +118,32 @@ def handler(backend):
     return handle
 
 
+async def redirect(reader, writer):
+    """Port 80: answer any request with a redirect to the https page on the same host."""
+    try:
+        head = await asyncio.wait_for(reader.readuntil(b'\r\n\r\n'), 10)
+        lines = head.decode('latin-1').split('\r\n')
+        path = lines[0].split(' ')[1] if len(lines[0].split(' ')) > 1 else '/'
+        host = next((l.split(':', 1)[1].strip() for l in lines[1:] if l.lower().startswith('host:')), '')
+        if host.startswith('['):
+            host = host[:host.index(']') + 1]
+        else:
+            host = host.split(':')[0]
+        if not host:
+            host = writer.get_extra_info('sockname')[0]
+        if not path.startswith('/'):
+            path = '/'
+        loc = f'https://{host}{path}'
+        body = f'<a href="{loc}">{loc}</a>\n'.encode()
+        writer.write((f'HTTP/1.1 301 Moved Permanently\r\nLocation: {loc}\r\nContent-Type: text/html\r\n'
+                      f'Content-Length: {len(body)}\r\nConnection: close\r\n\r\n').encode() + body)
+        await writer.drain()
+    except (asyncio.TimeoutError, asyncio.IncompleteReadError, asyncio.LimitOverrunError, ConnectionError, OSError):
+        pass
+    finally:
+        writer.close()
+
+
 async def main():
     listeners = {}        # (addr, port) -> server
     ctx = None
@@ -135,6 +163,12 @@ async def main():
             listeners.pop(k).close()
             log(f'stopped https on {k[0]}:{k[1]} (address gone)')
         for a in addrs:
+            if (a, REDIRECT_PORT) not in listeners:
+                try:
+                    listeners[(a, REDIRECT_PORT)] = await asyncio.start_server(redirect, a, REDIRECT_PORT)
+                    log(f'http://{"[" + a + "]" if ":" in a else a}:{REDIRECT_PORT} -> redirect to https')
+                except OSError as e:
+                    log(f'could not listen on {a}:{REDIRECT_PORT}: {e}')
             for port, backend in PORTS.items():
                 if (a, port) in listeners:
                     continue
