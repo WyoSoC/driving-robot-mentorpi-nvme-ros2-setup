@@ -42,13 +42,28 @@ class Car:
         self.base = url.rstrip('/') + '/api/v1'
         self.timeout = timeout
         self.ctx = None
-        if url.startswith('https') and not verify:
+        self.resolved = False
+        if not verify:          # also for http://<car ip>, which redirects to https://<car ip>
             self.ctx = ssl.create_default_context()
             self.ctx.check_hostname = False
             self.ctx.verify_mode = ssl.CERT_NONE
 
+    def _resolve(self):
+        """Follow a redirect once (http://<car ip> -> https://<car ip>) and keep the address it led to, so drive
+        commands (POST) go straight there."""
+        self.resolved = True
+        try:
+            with urllib.request.urlopen(self.base, timeout=self.timeout, context=self.ctx) as r:
+                final = r.geturl().rstrip('/')
+        except (urllib.error.URLError, socket.timeout, ValueError):
+            return
+        if final != self.base and final.endswith('/api/v1'):
+            self.base = final
+
     # ---- plumbing ------------------------------------------------------------------------------
     def _open(self, path, body=None, timeout=None, query=None):
+        if not self.resolved:
+            self._resolve()
         url = self.base + path + ('?' + urllib.parse.urlencode(query) if query else '')
         data = json.dumps(body).encode() if body is not None else None
         req = urllib.request.Request(url, data, {'Content-Type': 'application/json'} if data is not None else {},
@@ -225,6 +240,8 @@ class Car:
         return self._raw_post('/api/nav/cancel')
 
     def _raw_post(self, path, **query):
+        if not self.resolved:
+            self._resolve()
         url = self.base[:-len('/api/v1')] + path + ('?' + urllib.parse.urlencode(query) if query else '')
         req = urllib.request.Request(url, b'', method='POST')
         try:
