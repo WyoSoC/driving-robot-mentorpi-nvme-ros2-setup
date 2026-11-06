@@ -7,6 +7,8 @@ for turning pictures into arrays (see example.py).
     car = Car('http://192.168.1.50:8000')         # or https://<car>.<tailnet>.ts.net, or https://<car ip>
     print(car.battery())                           # voltage, charge %, charging / in use, charging mode
     print(car.state()['lidar'])                    # nearest thing front / left / back / right
+    full = car.sensors()                           # FULL data: every field of every sensor's latest message
+    full['topics']['imu_raw']['msg']               # e.g. the raw IMU: orientation, angular_velocity, ...
     open('pic.jpg', 'wb').write(car.picture())     # one camera picture (JPEG)
     for jpeg in car.video():                       # live video, one JPEG per frame
         ...
@@ -82,6 +84,23 @@ class Car:
         nav, explore."""
         return self._get('/state')
 
+    def sensors(self, images=False):
+        """FULL sensor data. 'topics': the latest message of every sensor topic, every field as ROS has it
+        (lidar, imu_raw, imu, imu_corrected, imu_rpy, imu_steady, odom_wheels, odom, odom_lidar, battery_mv,
+        depth_scan, depth_bumps, depth_drops, rgb_camera_info, depth_camera_info, command, button), each with
+        topic, type, about, age_s, hz and msg (None: no message yet). Also 'battery' (estimate), 'depth_compare',
+        'frames' (where the sensors sit on the car) and 'state'. images=True: also 'rgb_jpeg_base64' and
+        'depth_png_base64'. The first call takes 1-4 s (the car starts listening to every topic)."""
+        with self._open('/sensors', query={'images': int(bool(images))}, timeout=max(self.timeout, 15)) as r:
+            return json.load(r)
+
+    def depth_points(self, step=4, ply=False):
+        """3D points (m) from the depth image, in the car's frame (x forward, y left, z up): a list of [x, y, z],
+        every step-th pixel (step 4: ~19000 points). ply=True: the PLY file's bytes (MeshLab, CloudCompare, Open3D)."""
+        if ply:
+            return self._bytes('/depth/points', step=step, format='ply')
+        return self._get('/depth/points', step=step)['points']
+
     def battery(self):
         """voltage, level (ok / low / critical), soc (%), state (charging / discharging / steady / full /
         collecting), eta_min + eta_kind (to empty / to full), charging_mode (on / switching / off)."""
@@ -143,9 +162,10 @@ class Car:
         finally:
             r.close()
 
-    def stream(self, hz=5):
-        """Live state (like state()), hz times a second, until you stop iterating."""
-        r = self._open('/stream', query={'hz': hz}, timeout=10)
+    def stream(self, hz=5, full=False):
+        """Live state (like state()), hz times a second, until you stop iterating. full=True: the full sensor
+        data (like sensors()) each time."""
+        r = self._open('/stream', query={'hz': hz, 'full': int(bool(full))}, timeout=15)
         try:
             for line in r:
                 if line.startswith(b'data: '):

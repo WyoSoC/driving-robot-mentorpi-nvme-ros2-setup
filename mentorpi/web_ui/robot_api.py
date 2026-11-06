@@ -6,7 +6,15 @@ and an example are in mentorpi/client/):
   GET  /api/v1                 what this is: car, limits, endpoints
   GET  /api/v1/state           everything at once: drive, odometry, IMU, lidar summary, battery, charging, safety,
                                depth camera, SLAM / navigation / mapping
-  GET  /api/v1/stream?hz=5     the same state, pushed hz times a second (Server-Sent Events: "data: {json}")
+  GET  /api/v1/stream?hz=5     the same state, pushed hz times a second (Server-Sent Events: "data: {json}");
+                               full=1: the full sensor data (below) instead
+  GET  /api/v1/sensors         FULL sensor data: the latest message of every sensor topic, every field (lidar
+                               ranges + intensities, raw / calibrated / corrected IMU, wheel / EKF / lidar
+                               odometry, battery mV, depth camera scans, camera intrinsics, buttons, the command
+                               being executed), with age and rate; plus the battery estimate, the depth camera's
+                               comparison with the lidar and the sensors' mounting on the car.
+                               images=1: also the colour picture (JPEG) and depth image (16-bit PNG), base64
+  GET  /api/v1/depth/points?step=4&format=json|ply   3D point cloud from the depth image, in the car's frame
   GET  /api/v1/battery         voltage, charge %, charging / in use, time to empty / full, charging mode
   GET  /api/v1/odom            EKF odometry: x, y, yaw, speed, turn rate
   GET  /api/v1/imu             roll, pitch, accelerations, turn rates
@@ -44,7 +52,10 @@ from geometry_msgs.msg import Twist, Vector3Stamped
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Imu, LaserScan
 
+import base64
+
 import car_geometry as g
+from sensor_cache import SensorCache
 
 VERSION = 1
 MAX_SPEED = 0.7                 # m/s (the page's limit)
@@ -140,6 +151,7 @@ class RobotAPI:
         except ImportError:
             self.buzzer_pub = None
         node.create_timer(0.1, self.tick)
+        self.sensors_cache = SensorCache(node)
 
     # ---- sensors -------------------------------------------------------------------------
     def on_scan(self, msg):
@@ -383,11 +395,48 @@ class RobotAPI:
         with urllib.request.urlopen(f'{VIDEO}/snapshot?topic={VIEWS[view]}', timeout=5) as r:
             return r.read()
 
+    def sensors(self, images=False):
+        """Everything every sensor last said (sensor_cache.py), plus what the car makes of it."""
+        out = {'car': self.node.car_name, 't': time.time(),
+               'frames': {'base_footprint': 'the car: on the floor, x forward, y left, z up (origin at the rear axle)',
+                          'lidar': {'x': g.LIDAR_X, 'y': 0.0, 'z': g.LIDAR_TOP_Z, 'note': 'same orientation as the car'},
+                          'depth_camera': self.depth_camera()},
+               'topics': self.sensors_cache.snapshot(),
+               'battery': self.battery(),
+               'depth_compare': self.node.depth_obs.compare or None,
+               'state': self.state()}
+        if images:
+            try:
+                out['rgb_jpeg_base64'] = base64.b64encode(self.snapshot('rgb')).decode()
+            except Exception as exc:
+                out['rgb_jpeg_base64'] = None
+                out['rgb_error'] = str(exc)
+            png = self.depth_png()
+            out['depth_png_base64'] = base64.b64encode(png).decode() if png else None
+        return out
+
+    def depth_points(self, step=4):
+        """The latest depth image as 3D points (m) in base_footprint, every step-th pixel. None: no image yet."""
+        m, d = self.depth_msg, self.node.depth_obs
+        K = getattr(d, 'K', None)
+        if m is None or K is None or getattr(d, 'R', None) is None:
+            return None
+        step = max(1, min(32, int(step)))
+        img = np.frombuffer(bytes(m.data), np.uint16).reshape(m.height, m.step // 2)[:, :m.width]
+        sub = img[::step, ::step].astype(np.float32) * 0.001
+        v, u = np.mgrid[0:m.height:step, 0:m.width:step]
+        ok = sub > 0
+        z = sub[ok]
+        rays = np.stack([(u[ok] - K[2]) / K[0] * z, (v[ok] - K[3]) / K[1] * z, z], -1)
+        pts = rays @ np.asarray(d.R).T + np.asarray(d.t)
+        return pts.round(3)
+
     def index(self):
         return {'api': VERSION, 'car': self.node.car_name,
                 'limits': {'speed_m_s': MAX_SPEED, 'steer_deg': MAX_STEER_DEG, 'duration_s': MAX_DURATION_S},
                 'docs': 'mentorpi/web_ui/robot_api.py and README "API"', 'endpoints': [
-                    'GET /api/v1/state', 'GET /api/v1/stream?hz=5', 'GET /api/v1/battery', 'GET /api/v1/odom',
+                    'GET /api/v1/state', 'GET /api/v1/stream?hz=5&full=0', 'GET /api/v1/sensors?images=0',
+                    'GET /api/v1/depth/points?step=4&format=json|ply', 'GET /api/v1/battery', 'GET /api/v1/odom',
                     'GET /api/v1/imu', 'GET /api/v1/lidar', 'GET /api/v1/camera.jpg?view=rgb|depth',
                     'GET /api/v1/video?view=rgb|depth&width=&quality=', 'GET /api/v1/depth.png', 'GET /api/v1/depth/camera',
                     'POST /api/v1/drive {speed, steer, duration, safe, dry}', 'POST /api/v1/stop', 'POST /api/v1/horn',
@@ -455,6 +504,22 @@ def handle_get(h, api):
         return _proxy_stream(h, api.video_url(view, q))
     if path == '/api/v1/stream':
         return _sse(h, api, q)
+    if path == '/api/v1/sensors':
+        return h._send(200, api.sensors(_bool(q.get('images'), False)))
+    if path == '/api/v1/depth/points':
+        try:
+            pts = api.depth_points(int(q.get('step', 4)))
+        except ValueError:
+            return h._send(400, {'error': 'step must be a whole number'})
+        if pts is None:
+            return h._send(503, {'error': 'no depth image yet'})
+        if q.get('format') == 'ply':
+            head = (f'ply\nformat ascii 1.0\ncomment MentorPi depth camera, base_footprint, m\nelement vertex {len(pts)}\n'
+                    'property float x\nproperty float y\nproperty float z\nend_header\n')
+            body = head + '\n'.join(f'{x:.3f} {y:.3f} {z:.3f}' for x, y, z in pts.tolist()) + '\n'
+            return h._send(200, body.encode(), 'application/octet-stream')
+        return h._send(200, {'frame': 'base_footprint (x forward, y left, z up), m', 'count': len(pts),
+                             'points': pts.tolist()})
     return h._send(404, {'error': 'not found', 'see': 'GET /api/v1'})
 
 
@@ -503,12 +568,13 @@ def _sse(h, api, q):
         hz = max(0.2, min(20.0, float(q.get('hz', 5))))
     except ValueError:
         hz = 5.0
+    full = _bool(q.get('full'), False)
     h.send_response(200)
     h.send_header('Content-Type', 'text/event-stream')
     h.end_headers()
     try:
         while True:
-            h.wfile.write(b'data: ' + json.dumps(api.state()).encode() + b'\n\n')
+            h.wfile.write(b'data: ' + json.dumps(api.sensors() if full else api.state()).encode() + b'\n\n')
             h.wfile.flush()
             time.sleep(1.0 / hz)
     except (BrokenPipeError, ConnectionResetError, OSError):

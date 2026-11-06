@@ -171,7 +171,9 @@ python3 client/example.py http://<car ip>:8000 --drive     # also drive
 from mentorpi_client import Car
 car = Car('http://<car ip>:8000')
 car.battery()                  # {'voltage': 7.26, 'level': 'ok', 'soc': 64, 'state': 'discharging', 'eta_min': 95, ..., 'charging_mode': 'off'}
-car.state()                    # everything: mode, drive, odom, map_pose, imu, lidar summary, battery, safety, depth, slam, nav, explore
+car.state()                    # summary: mode, drive, odom, map_pose, imu, lidar summary, battery, safety, depth, slam, nav, explore
+car.sensors()['topics']        # FULL data: every field of every sensor topic (lidar, 3 IMUs, 3 odometries, battery mV, ...)
+car.depth_points(step=4)       # [[x, y, z], ...] from the depth camera, car frame
 car.drive_for(0.15, steer=10, seconds=2)   # m/s (+ forward), degrees (+ left); stops for obstacles
 for jpeg in car.video(): ...   # live MJPEG frames
 for s in car.stream(hz=5): ... # live state
@@ -181,7 +183,9 @@ for s in car.stream(hz=5): ... # live state
 |---|---|
 | `GET /api/v1` | car name, limits, endpoint list |
 | `GET /api/v1/state` | everything at once (see above) |
-| `GET /api/v1/stream?hz=5` | the same, pushed `hz` times a second (Server-Sent Events, `data: {json}` lines; 0.2–20) |
+| `GET /api/v1/stream?hz=5` | the same, pushed `hz` times a second (Server-Sent Events, `data: {json}` lines; 0.2–20); `full=1`: the full sensor data instead |
+| `GET /api/v1/sensors` | **full sensor data**: the latest message of every sensor topic, every field, with age and rate (below); plus the battery estimate, the depth camera's comparison with the lidar and where the sensors sit on the car. `images=1` adds the colour picture and depth image (base64) |
+| `GET /api/v1/depth/points?step=4&format=json\|ply` | 3D points from the depth image in the car's frame (step 4: ~19000 points) |
 | `GET /api/v1/battery` | voltage, level (ok / low < 6.9 V / critical < 6.6 V), charge %, charging / in use / steady / full, minutes to empty or full, charging mode |
 | `GET /api/v1/odom` | EKF odometry since start: x, y, heading, speed, turn rate |
 | `GET /api/v1/imu` | roll, pitch, heading, accelerations, turn rates |
@@ -191,6 +195,14 @@ for s in car.stream(hz=5): ... # live state
 | `GET /api/v1/depth.png` / `depth/camera` | the depth image (16-bit PNG, mm) / its intrinsics and mounting |
 | `POST /api/v1/drive` | `{"speed": m/s, "steer": deg, "duration": s, "safe": true, "dry": false}` → 200, or 409 with the reason |
 | `POST /api/v1/stop` · `/horn` · `/charging {"on": true}` | stop now · beep · charging mode |
+
+`/api/v1/sensors` topics (each: `topic`, `type`, `about`, `age_s`, `hz`, `msg` = the ROS message as JSON,
+NaN / inf → `null`): `lidar` (`/scan_raw`: ranges + intensities), `imu_raw` (the board, uncalibrated), `imu`
+(calibrated), `imu_corrected` (gyro bias removed), `imu_rpy`, `imu_steady`, `odom_wheels` (`/odom_raw`), `odom`
+(EKF), `odom_lidar` (rf2o), `battery_mv`, `depth_scan` / `depth_bumps` / `depth_drops`, `rgb_camera_info`,
+`depth_camera_info`, `command` (`/app/cmd_vel`, only while driving), `button`. The car subscribes to these
+only while a program asks (the first call takes 1–4 s; unsubscribed a minute after the last one).
+`example.py` prints them and saves `car_sensors.json`, `car_lidar.csv` and `car_depth_points.ply`.
 
 Driving rules:
 - A command holds for `duration` (default 0.5 s, at most 3 s), then the car stops by itself: a program that
@@ -260,6 +272,7 @@ the same way; the client wraps `say()`, `nav_go()` and `nav_cancel()`.
 │   ├── depth_obstacles.py   depth camera obstacles (/depth/scan) + comparison with the lidar
 │   ├── map_store.py         saved maps + content hash (same map on two cars?)
 │   ├── robot_api.py         /api/v1: drive (with a lidar stop) and read everything from other computers
+│   ├── sensor_cache.py      /api/v1/sensors: every sensor topic's latest message, in full
 │   └── start_web_ui.sh
 ```
 
