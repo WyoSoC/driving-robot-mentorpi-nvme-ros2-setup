@@ -325,6 +325,7 @@ class WebBridge(Node):
 
     def on_battery(self, msg):
         self.battery_v = msg.data / 1000.0
+        self.battery_t = time.time()
         self.battery.add(time.monotonic(), self.battery_v)
 
     def on_odom(self, msg):

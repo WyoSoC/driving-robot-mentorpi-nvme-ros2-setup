@@ -122,6 +122,11 @@ def sector_min(ranges, angle_min, angle_inc, lo_deg, hi_deg):
     return round(float(r[m].min()), 3) if m.any() else None
 
 
+def stamp(header):
+    """A ROS header's time as seconds since 1970 (the car's clock; ROS time is wall time here)."""
+    return round(header.stamp.sec + header.stamp.nanosec * 1e-9, 6)
+
+
 def r3(v, n=3):
     return None if v is None or not math.isfinite(v) else round(float(v), n)
 
@@ -160,7 +165,7 @@ class RobotAPI:
 
     def on_imu(self, msg):
         a = msg.linear_acceleration
-        self.imu = {'accel': [r3(a.x), r3(a.y), r3(a.z)]}
+        self.imu = {'accel': [r3(a.x), r3(a.y), r3(a.z)], 'stamp': stamp(msg.header)}
         self.imu_at = time.monotonic()
 
     def on_imu_corrected(self, msg):
@@ -176,7 +181,7 @@ class RobotAPI:
         yaw = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
         self.odom = {'x': r3(p.x), 'y': r3(p.y), 'yaw_deg': r3(math.degrees(yaw), 1),
                      'speed': r3(msg.twist.twist.linear.x), 'turn_rate_deg_s': r3(math.degrees(msg.twist.twist.angular.z), 1),
-                     't': time.time()}
+                     'stamp': stamp(msg.header)}
 
     def scan_fresh(self):
         return self.scan is not None and time.monotonic() - self.scan_at < SCAN_STALE_S
@@ -301,13 +306,13 @@ class RobotAPI:
         v = n.battery_v
         b = dict(n.battery_st or {})
         return {'voltage': r3(v, 2), 'level': None if v is None else 'critical' if v < CRITICAL_V else 'low' if v < LOW_V else 'ok',
-                'charging_mode': n.charging, **b}
+                'charging_mode': n.charging, 'stamp': r3(getattr(n, 'battery_t', None), 3), **b}
 
     def imu_state(self):
         return {'roll_deg': r3(math.degrees(self.rpy[0]), 1) if self.rpy else None,
                 'pitch_deg': r3(math.degrees(self.rpy[1]), 1) if self.rpy else None,
                 'yaw_deg': self.odom['yaw_deg'] if self.odom else None,
-                'accel_m_s2': self.imu.get('accel'), 'gyro_deg_s': self.gyro,
+                'accel_m_s2': self.imu.get('accel'), 'gyro_deg_s': self.gyro, 'stamp': self.imu.get('stamp'),
                 'age_s': r3(time.monotonic() - self.imu_at, 2) if self.imu_at else None}
 
     def lidar_summary(self):
@@ -320,7 +325,7 @@ class RobotAPI:
         return {'front_m': sector_min(*args, -30, 30), 'left_m': sector_min(*args, 60, 120),
                 'back_m': sector_min(*args, 150, -150), 'right_m': sector_min(*args, -120, -60),
                 'nearest_m': r3(float(r[ok].min())) if ok.any() else None,
-                'readings': int(ok.sum()), 'age_s': r3(time.monotonic() - self.scan_at, 2)}
+                'readings': int(ok.sum()), 'stamp': stamp(s.header), 'age_s': r3(time.monotonic() - self.scan_at, 2)}
 
     def lidar(self):
         if self.scan is None:
@@ -329,7 +334,7 @@ class RobotAPI:
         return {'frame': 'lidar: same orientation as the car (x forward, y left), '
                          f'{g.LIDAR_X} m along x from base_footprint, {g.LIDAR_TOP_Z} m up',
                 'angle_min': s.angle_min, 'angle_increment': s.angle_increment, 'range_min': s.range_min,
-                'range_max': s.range_max, 'stamp': s.header.stamp.sec + s.header.stamp.nanosec * 1e-9,
+                'range_max': s.range_max, 'stamp': stamp(s.header),
                 'age_s': r3(time.monotonic() - self.scan_at, 2),
                 'ranges': [round(x, 3) if math.isfinite(x) and x > 0 else None for x in s.ranges]}
 
@@ -347,7 +352,8 @@ class RobotAPI:
         dc = n.depth_obs.compare or {}
         floor = dc.get('floor') or {}
         return {
-            'car': n.car_name, 't': time.time(),
+            'car': n.car_name, 't': time.time(),      # when this answer was made (car clock, s since 1970); each
+                                                     # part has its own 'stamp': when that sensor measured it
             'mode': ('charging' if n.charging != 'off' else 'exploring' if n.explorer.active()
                      else 'navigating' if nav['running'] else 'mapping' if n.slam.running() else 'idle'),
             'drive': self.drive_state(),

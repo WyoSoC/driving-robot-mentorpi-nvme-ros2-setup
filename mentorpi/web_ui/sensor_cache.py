@@ -122,6 +122,7 @@ class SensorCache:
         for name, (topic, typ, about) in TOPICS.items():
             got = self.latest.get(name)
             out[name] = {'topic': topic, 'type': f'{typ.__module__.split(".")[0]}/{typ.__name__}', 'about': about,
+                         'received': round(got[1], 6) if got else None,
                          'age_s': round(now - got[2], 3) if got else None, 'hz': self.rate(name),
-                         'received': self.counts[name], 'msg': to_json(got[0]) if got else None}
+                         'count': self.counts[name], 'msg': to_json(got[0]) if got else None}
         return out

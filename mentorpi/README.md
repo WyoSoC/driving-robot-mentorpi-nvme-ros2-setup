@@ -196,8 +196,9 @@ for s in car.stream(hz=5): ... # live state
 | `POST /api/v1/drive` | `{"speed": m/s, "steer": deg, "duration": s, "safe": true, "dry": false}` → 200, or 409 with the reason |
 | `POST /api/v1/stop` · `/horn` · `/charging {"on": true}` | stop now · beep · charging mode |
 
-`/api/v1/sensors` topics (each: `topic`, `type`, `about`, `age_s`, `hz`, `msg` = the ROS message as JSON,
-NaN / inf → `null`): `lidar` (`/scan_raw`: ranges + intensities), `imu_raw` (the board, uncalibrated), `imu`
+`/api/v1/sensors` topics (each: `topic`, `type`, `about`, `received` (car clock, s since 1970), `age_s`, `hz`, `count`,
+`msg` = the ROS message as JSON, NaN / inf → `null`; most messages carry `header.stamp`, when the sensor
+measured): `lidar` (`/scan_raw`: ranges + intensities), `imu_raw` (the board, uncalibrated), `imu`
 (calibrated), `imu_corrected` (gyro bias removed), `imu_rpy`, `imu_steady`, `odom_wheels` (`/odom_raw`), `odom`
 (EKF), `odom_lidar` (rf2o), `battery_mv`, `depth_scan` / `depth_bumps` / `depth_drops`, `rgb_camera_info`,
 `depth_camera_info`, `command` (`/app/cmd_vel`, only while driving), `button`. The car subscribes to these
@@ -219,6 +220,24 @@ Driving rules:
 
 The page's own endpoints (navigation goals, SLAM, maps, audio, runs: `web_ui_server.py`'s docstring) work
 the same way; the client wraps `say()`, `nav_go()` and `nav_cancel()`.
+
+**Driving from a computer: `client/drive.py`** (`pip install pygame`). A window with the live video (colour
+or depth, with each frame's time and delay), the car's sensors, a lidar radar and a joystick, like the page:
+
+```bash
+python3 client/drive.py http://<car ip>:8000             # or https://<car ip> --insecure, or the tailnet name
+python3 client/drive.py http://<car ip>:8000 --dry       # try it: the car checks every command, doesn't move
+python3 client/drive.py http://<car ip>:8000 --record --full   # also save every frame; log every sensor topic
+```
+
+W/A/S/D or the arrow keys drive (hold), the mouse drags the joystick, Space is E-STOP, +/- the speed limit
+(starts at 0.3 m/s), V colour / depth, R records frames, H horn, Q quits. The car stops when the keys are let
+go, the window loses focus or the program ends. Everything goes into `drive_<car>_<date>_<time>.jsonl`, one
+JSON object per line with `t_local` (this computer's clock): `start` (with `clock_offset_s`, the car's clock
+minus this computer's), `state` 10 times a second (or `sensors` with `--full`), `lidar` full scans 5 times a
+second, `command` (each command sent and the car's answer), `frame` (recorded frames, named by their time).
+Sensor times come from the car: `t` (when it answered) and each part's `stamp` (when the sensor measured);
+video frames carry the camera's timestamp.
 
 ---
 
@@ -246,7 +265,8 @@ the same way; the client wraps `say()`, `nav_go()` and `nav_cancel()`.
 │                            test_depth_record.py (depth images in runs, floor-fit reasons, replay),
 │                            test_api.py (API driving: path check, refusals, timeout, the page winning)
 ├── client/                  for programs on other computers: mentorpi_client.py (Python client of
-│                            the API, standard library only) and example.py
+│                            the API, standard library only), example.py, drive.py (drive with keyboard /
+│                            mouse, live video, time-stamped log; pygame)
 ├── install.sh               installs/updates everything on a car (idempotent)
 ├── make_bundle.sh           packages kit + Docker image for transfer
 ├── system/                  udev rules + systemd unit templates

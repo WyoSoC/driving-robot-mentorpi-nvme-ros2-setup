@@ -22,6 +22,10 @@ def scan_with(points):
     return r
 
 
+def fake_scan(**kw):
+    return types.SimpleNamespace(header=types.SimpleNamespace(stamp=types.SimpleNamespace(sec=1000, nanosec=0)), **kw)
+
+
 def obstacle(points, speed, steer_deg):
     return ra.path_obstacle(scan_with(points), AMIN, AINC, speed, math.radians(steer_deg))
 
@@ -74,7 +78,7 @@ node = Node()
 api = ra.RobotAPI(node)
 now = [1000.0]
 ra.time.monotonic = lambda: now[0]
-api.on_scan(types.SimpleNamespace(ranges=scan_with([(2.0, 0.0)]).tolist(), angle_min=AMIN, angle_increment=AINC))
+api.on_scan(fake_scan(ranges=scan_with([(2.0, 0.0)]).tolist(), angle_min=AMIN, angle_increment=AINC))
 
 r = api.drive(0.2, 0, 1.0)
 print('drive:', r)
@@ -86,9 +90,9 @@ now[0] += 0.6; api.tick()
 assert api.cmd is None and sent[-1] == (0.0, 0.0), 'stops when the duration is over'
 
 # something appears 0.25 m ahead while driving: stopped
-api.on_scan(types.SimpleNamespace(ranges=scan_with([(2.0, 0.0)]).tolist(), angle_min=AMIN, angle_increment=AINC))
+api.on_scan(fake_scan(ranges=scan_with([(2.0, 0.0)]).tolist(), angle_min=AMIN, angle_increment=AINC))
 assert api.drive(0.3, 0, 2.0)['ok']
-api.on_scan(types.SimpleNamespace(ranges=scan_with([(0.36, 0.0)]).tolist(), angle_min=AMIN, angle_increment=AINC))
+api.on_scan(fake_scan(ranges=scan_with([(0.36, 0.0)]).tolist(), angle_min=AMIN, angle_increment=AINC))
 now[0] += 0.1; api.tick()
 assert api.cmd is None and sent[-1] == (0.0, 0.0) and 'obstacle' in api.last['result']['message'], api.last
 print('stopped for:', api.last['result']['message'])
@@ -107,7 +111,7 @@ assert r['ok'] and r['dry'] and len(sent) == n and api.cmd is None
 now[0] += 5
 r = api.drive(-0.2, 0, 1.0)
 assert not r['ok'] and 'lidar' in r['message'], r
-api.on_scan(types.SimpleNamespace(ranges=scan_with([]).tolist(), angle_min=AMIN, angle_increment=AINC))
+api.on_scan(fake_scan(ranges=scan_with([]).tolist(), angle_min=AMIN, angle_increment=AINC))
 
 # clamping
 r = api.drive(5, -90, 60)
@@ -134,8 +138,9 @@ api.drive(0.2, 0, 2.0); node.charging = 'switching'; now[0] += 0.1; api.tick(); 
 assert api.cmd is None and sent[-1] == (0.0, 0.0)
 
 # 3. lidar summary sectors
-api.on_scan(types.SimpleNamespace(ranges=scan_with([(1.0, 0.0), (-0.01, 0.5), (-0.8, 0.0)]).tolist(), angle_min=AMIN, angle_increment=AINC))
+api.on_scan(fake_scan(ranges=scan_with([(1.0, 0.0), (-0.01, 0.5), (-0.8, 0.0)]).tolist(), angle_min=AMIN, angle_increment=AINC))
 s = api.lidar_summary()
 print('lidar summary:', s)
+assert s['stamp'] == 1000.0
 assert abs(s['front_m'] - 1.01) < 0.02 and abs(s['left_m'] - 0.5) < 0.02 and abs(s['back_m'] - 0.79) < 0.02 and s['right_m'] is None
 print('OK: robot API')

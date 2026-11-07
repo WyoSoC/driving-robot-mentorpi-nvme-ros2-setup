@@ -103,7 +103,8 @@ class Car:
         """FULL sensor data. 'topics': the latest message of every sensor topic, every field as ROS has it
         (lidar, imu_raw, imu, imu_corrected, imu_rpy, imu_steady, odom_wheels, odom, odom_lidar, battery_mv,
         depth_scan, depth_bumps, depth_drops, rgb_camera_info, depth_camera_info, command, button), each with
-        topic, type, about, age_s, hz and msg (None: no message yet). Also 'battery' (estimate), 'depth_compare',
+        topic, type, about, received (car clock), age_s, hz, count and msg (None: no message yet; most messages
+        have header.stamp = when the sensor measured). Also 'battery' (estimate), 'depth_compare',
         'frames' (where the sensors sit on the car) and 'state'. images=True: also 'rgb_jpeg_base64' and
         'depth_png_base64'. The first call takes 1-4 s (the car starts listening to every topic)."""
         with self._open('/sensors', query={'images': int(bool(images))}, timeout=max(self.timeout, 15)) as r:
@@ -155,25 +156,33 @@ class Car:
         """Depth camera intrinsics (fx, fy, cx, cy) and mounting (R, t), to turn depth pixels into points."""
         return self._get('/depth/camera')
 
-    def video(self, view='rgb', width=None, quality=70):
-        """Live video: yields one JPEG (bytes) per frame until you stop iterating."""
+    def video(self, view='rgb', width=None, quality=70, with_time=False):
+        """Live video: yields one JPEG (bytes) per frame until you stop iterating. with_time=True: yields
+        (jpeg, stamp), stamp = when the camera took the frame (car clock, s since 1970; None if not sent)."""
         q = {'view': view, 'quality': quality}
         if width:
             q['width'] = width
         r = self._open('/video', query=q, timeout=10)
         try:
             while True:
-                length = None
+                length, ts = None, None
                 while True:                                    # part headers
                     line = r.readline()
                     if not line:
                         return
                     line = line.strip()
-                    if line.lower().startswith(b'content-length:'):
+                    low = line.lower()
+                    if low.startswith(b'content-length:'):
                         length = int(line.split(b':', 1)[1])
+                    elif low.startswith(b'x-timestamp:'):
+                        try:
+                            ts = float(line.split(b':', 1)[1])
+                        except ValueError:
+                            pass
                     elif not line and length is not None:
                         break
-                yield r.read(length)
+                jpeg = r.read(length)
+                yield (jpeg, ts) if with_time else jpeg
         finally:
             r.close()
 
